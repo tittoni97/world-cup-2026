@@ -8,19 +8,20 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.2/papaparse.min.js"></script>
     
     <script>
-        const getFlagEmoji = (countryName) => {
+        // Uses official 2-letter ISO codes for FlagCDN images to bypass the Windows emoji issue
+        const getFlagCode = (countryName) => {
             if (!countryName) return '';
-            const flags = {
-                'Argentina': '🇦🇷', 'Spain': '🇪🇸', 'Portugal': '🇵🇹', 'Germany': '🇩🇪',
-                'Brazil': '🇧🇷', 'France': '🇫🇷', 'England': '🏴󠁧󠁢󠁥󠁮󠁧󠁿', 'Italy': '🇮🇹',
-                'Netherlands': '🇳🇱', 'Uruguay': '🇺🇾', 'Croatia': '🇭🇷', 'Belgium': '🇧🇪',
-                'Mexico': '🇲🇽', 'USA': '🇺🇸', 'United States': '🇺🇸', 'Colombia': '🇨🇴',
-                'Morocco': '🇲🇦', 'Japan': '🇯🇵', 'Senegal': '🇸🇳', 'Switzerland': '🇨🇭'
+            const codes = {
+                'Argentina': 'ar', 'Spain': 'es', 'Portugal': 'pt', 'Germany': 'de',
+                'Brazil': 'br', 'France': 'fr', 'England': 'gb-eng', 'Italy': 'it',
+                'Netherlands': 'nl', 'Uruguay': 'uy', 'Croatia': 'hr', 'Belgium': 'be',
+                'Mexico': 'mx', 'USA': 'us', 'United States': 'us', 'Colombia': 'co',
+                'Morocco': 'ma', 'Japan': 'jp', 'Senegal': 'sn', 'Switzerland': 'ch',
+                'South Africa': 'za', 'South Korea': 'kr', 'Canada': 'ca'
             };
-            return flags[countryName.trim()] || '🏳️';
+            return codes[countryName.trim()] || '';
         };
 
-        // This officially registers the logic with the framework to prevent race conditions
         document.addEventListener('alpine:init', () => {
             Alpine.data('dashboardData', () => ({
                 loading: true,
@@ -63,7 +64,7 @@
                                 name: name, points: 0, exact_scores: 0, 
                                 formArray: [], predictions: [], 
                                 finalWinner: row['Final Winner'],
-                                flag: getFlagEmoji(row['Final Winner'])
+                                flagCode: getFlagCode(row['Final Winner']) // Swapped to image code
                             };
                         }
 
@@ -205,9 +206,15 @@
                             </td>
                             
                             <td class="p-4 font-bold text-white flex items-center gap-3">
-                                <div class="w-8 h-8 rounded-full bg-gradient-to-br from-gray-700 to-gray-600 flex items-center justify-center text-xs shadow-inner" x-text="user.name.substring(0,2).toUpperCase()"></div>
+                                <div class="w-8 h-8 rounded-full bg-gradient-to-br from-gray-700 to-gray-600 flex items-center justify-center text-xs shadow-inner shrink-0" x-text="user.name.substring(0,2).toUpperCase()"></div>
                                 <span x-text="user.name" :class="{'text-lg': index < 3}"></span>
-                                <span class="text-xl ml-2 drop-shadow-md" :title="'Supporter: ' + user.finalWinner" x-text="user.flag"></span>
+                                
+                                <template x-if="user.flagCode">
+                                    <img :src="'https://flagcdn.com/w40/' + user.flagCode + '.png'" 
+                                         class="w-6 h-auto ml-2 shadow-sm rounded-sm" 
+                                         :title="'Supporter: ' + user.finalWinner" 
+                                         :alt="user.finalWinner">
+                                </template>
                             </td>
                             
                             <td class="p-4 text-center hidden md:table-cell tracking-widest text-sm" title="🟩 Exact | 🟨 Result | ⬛ Miss" x-text="user.form"></td>
@@ -219,4 +226,53 @@
             </table>
         </div>
         
-        <div class="mt-6 flex justify-center gap-4 text-xs text-gray
+        <div class="mt-6 flex justify-center gap-4 text-xs text-gray-500">
+            <span>🟩 Exact Score (8pts)</span>
+            <span>🟨 Correct Result (3pts)</span>
+            <span>⬛ Zero Points</span>
+        </div>
+    </div>
+
+    <div x-cloak x-show="selectedUser" class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4" @click.self="selectedUser = null">
+        <div class="bg-card w-full max-w-3xl rounded-2xl shadow-2xl border border-gray-700 overflow-hidden flex flex-col max-h-[85vh]">
+            <template x-if="selectedUser">
+                <div class="flex flex-col h-full">
+                    <div class="p-6 border-b border-gray-700 flex justify-between items-center bg-gray-800 shrink-0">
+                        <h2 class="text-2xl font-bold text-white flex items-center">
+                            <span x-text="selectedUser.name + '\'s Guesses'"></span>
+                            <template x-if="selectedUser.flagCode">
+                                <img :src="'https://flagcdn.com/w40/' + selectedUser.flagCode + '.png'" class="w-8 h-auto ml-3 shadow-sm rounded-sm">
+                            </template>
+                        </h2>
+                        <button @click="selectedUser = null" class="text-gray-400 hover:text-white text-3xl font-bold leading-none">&times;</button>
+                    </div>
+                    <div class="p-6 overflow-y-auto flex-1">
+                        <table class="w-full text-sm">
+                            <thead>
+                                <tr class="text-gray-400 border-b border-gray-700">
+                                    <th class="pb-2 text-left">Match</th>
+                                    <th class="pb-2 text-center">Prediction</th>
+                                    <th class="pb-2 text-center">Actual Result</th>
+                                    <th class="pb-2 text-center text-accent">Points</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <template x-for="pred in selectedUser.predictions">
+                                    <tr class="border-b border-gray-800/50 hover:bg-gray-800/30 transition">
+                                        <td class="py-3 text-gray-200 font-medium" x-text="pred.game"></td>
+                                        <td class="py-3 text-center font-mono bg-gray-800/30 rounded" x-text="pred.pred"></td>
+                                        <td class="py-3 text-center font-mono text-gray-400" x-text="pred.actual"></td>
+                                        <td class="py-3 text-center font-bold" 
+                                            :class="pred.points > 3 ? 'text-accent' : (pred.points > 0 ? 'text-yellow-400' : 'text-gray-600')" 
+                                            x-text="pred.points > 0 ? '+' + pred.points : '0'"></td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </template>
+        </div>
+    </div>
+</body>
+</html>
