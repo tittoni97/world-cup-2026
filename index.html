@@ -23,152 +23,19 @@
 </head>
 <body class="min-h-screen p-4 md:p-8" x-data="dashboardData()">
     
-    <div class="max-w-5xl mx-auto">
-        <header class="mb-8 text-center md:text-left flex flex-col md:flex-row justify-between items-center">
+    <div class="max-w-6xl mx-auto">
+        <header class="mb-6 text-center md:text-left flex flex-col md:flex-row justify-between items-center">
             <div>
                 <h1 class="text-4xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-accent to-blue-500 mb-2">
                     🏆 World Cup 2026 Predictor
                 </h1>
                 <p class="text-gray-400 text-sm">AQA / RMC / GAM Score Competition</p>
             </div>
+            <div class="mt-4 md:mt-0 flex gap-4 text-sm font-semibold bg-card px-4 py-2 rounded-lg border border-gray-700">
+                <span class="text-accent">Live Standings</span>
+            </div>
         </header>
 
-        <div x-show="loading" class="text-center text-gray-400 py-10">
-            <p class="text-xl animate-pulse">Loading latest scores...</p>
-        </div>
-
-        <div x-show="!loading" x-cloak class="glass-card rounded-xl shadow-xl overflow-hidden border border-gray-700">
-            <table class="w-full text-left border-collapse">
-                <thead>
-                    <tr class="bg-gray-800 text-gray-300 text-sm uppercase tracking-wider">
-                        <th class="p-4 font-semibold text-center w-16">Rank</th>
-                        <th class="p-4 font-semibold">Colleague</th>
-                        <th class="p-4 font-semibold text-center hidden md:table-cell" title="Number of exact score predictions">Exact Scores</th>
-                        <th class="p-4 font-semibold text-center text-accent">Total Points</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <template x-for="(user, index) in leaderboard" :key="user.name">
-                        <tr class="border-b border-gray-800 hover:bg-gray-700/50 transition cursor-pointer" @click="selectedUser = user">
-                            <td class="p-4 text-center font-bold text-gray-400" x-text="index + 1"></td>
-                            <td class="p-4 font-bold text-white flex items-center gap-3">
-                                <div class="w-8 h-8 rounded-full bg-gradient-to-br from-gray-700 to-gray-600 flex items-center justify-center text-xs" x-text="user.name.substring(0,2).toUpperCase()"></div>
-                                <span x-text="user.name"></span>
-                            </td>
-                            <td class="p-4 text-center font-mono text-gray-400 hidden md:table-cell" x-text="user.exact_scores"></td>
-                            <td class="p-4 text-center font-bold text-xl text-accent" x-text="user.points"></td>
-                        </tr>
-                    </template>
-                </tbody>
-            </table>
-        </div>
-    </div>
-
-    <div x-cloak x-show="selectedUser" class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4" @click.self="selectedUser = null">
-        <div class="bg-card w-full max-w-3xl rounded-2xl shadow-2xl border border-gray-700 overflow-hidden flex flex-col max-h-[85vh]">
-            <div class="p-6 border-b border-gray-700 flex justify-between items-center bg-gray-800">
-                <h2 class="text-2xl font-bold text-white" x-text="selectedUser?.name + '\'s Guesses'"></h2>
-                <button @click="selectedUser = null" class="text-gray-400 hover:text-white text-3xl font-bold leading-none">&times;</button>
-            </div>
-            <div class="p-6 overflow-y-auto flex-1">
-                <table class="w-full text-sm">
-                    <thead>
-                        <tr class="text-gray-400 border-b border-gray-700">
-                            <th class="pb-2 text-left">Match</th>
-                            <th class="pb-2 text-center">Prediction</th>
-                            <th class="pb-2 text-center">Actual</th>
-                            <th class="pb-2 text-center text-accent">Points</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <template x-for="pred in selectedUser?.predictions">
-                            <tr class="border-b border-gray-800/50 hover:bg-gray-800/30">
-                                <td class="py-3 text-gray-200 font-medium" x-text="pred.game"></td>
-                                <td class="py-3 text-center font-mono bg-gray-800/30 rounded" x-text="pred.pred"></td>
-                                <td class="py-3 text-center font-mono text-gray-400" x-text="pred.actual"></td>
-                                <td class="py-3 text-center font-bold" 
-                                    :class="pred.points > 3 ? 'text-accent' : (pred.points > 0 ? 'text-yellow-400' : 'text-gray-600')" 
-                                    x-text="pred.points > 0 ? '+' + pred.points : '0'"></td>
-                            </tr>
-                        </template>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </div>
-
-    <script>
-        function dashboardData() {
-            return {
-                loading: true,
-                leaderboard: [],
-                selectedUser: null,
-                
-                init() {
-                    // Automatically fetches the raw file from the repository
-                    fetch('data.csv?v=' + new Date().getTime()) // prevents browser caching
-                        .then(response => {
-                            if (!response.ok) throw new Error("Could not find data.csv");
-                            return response.text();
-                        })
-                        .then(csvText => {
-                            Papa.parse(csvText, {
-                                header: true,
-                                dynamicTyping: true,
-                                skipEmptyLines: true,
-                                complete: (results) => {
-                                    this.processData(results.data);
-                                }
-                            });
-                        })
-                        .catch(error => {
-                            console.error("Error loading CSV:", error);
-                            this.loading = false;
-                        });
-                },
-
-                processData(data) {
-                    const users = {};
-
-                    data.forEach(row => {
-                        const name = row['Name'];
-                        if (!name) return;
-
-                        if (!users[name]) {
-                            users[name] = { name: name, points: 0, exact_scores: 0, predictions: [] };
-                        }
-
-                        const gamePoints = parseFloat(row['Game_Points']) || 0;
-                        const scorePoints = parseFloat(row['Score_Points']) || 0;
-                        
-                        users[name].points += gamePoints;
-                        if (scorePoints > 0) {
-                            users[name].exact_scores += 1;
-                        }
-
-                        const predHome = row['Score Home'] !== null && row['Score Home'] !== undefined ? row['Score Home'] : '-';
-                        const predAway = row['Score Away'] !== null && row['Score Away'] !== undefined ? row['Score Away'] : '-';
-                        
-                        const actualHome = row['Games.Score Home'] !== null && row['Games.Score Home'] !== undefined ? row['Games.Score Home'] : '-';
-                        const actualAway = row['Games.Score Away'] !== null && row['Games.Score Away'] !== undefined ? row['Games.Score Away'] : '-';
-
-                        users[name].predictions.push({
-                            game: row['Game'],
-                            pred: `${predHome} - ${predAway}`,
-                            actual: `${actualHome} - ${actualAway}`,
-                            points: gamePoints
-                        });
-                    });
-
-                    this.leaderboard = Object.values(users).sort((a, b) => {
-                        if (b.points !== a.points) return b.points - a.points;
-                        return b.exact_scores - a.exact_scores; // Tie breaker
-                    });
-
-                    this.loading = false;
-                }
-            }
-        }
-    </script>
-</body>
-</html>
+        <div x-cloak x-show="latestMatch" class="mb-8 bg-gradient-to-r from-blue-900/50 to-indigo-900/50 border border-blue-500/30 rounded-xl p-4 shadow-lg flex flex-col md:flex-row items-center justify-between">
+            <div class="flex items-center gap-4 mb-3 md:mb-0">
+                <div class="bg-blue-500/20 p-3 rounded-full text-2
