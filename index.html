@@ -5,8 +5,129 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AQA/RMC/GAM World Cup 2026</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.2/papaparse.min.js"></script>
+    
+    <script>
+        const getFlagEmoji = (countryName) => {
+            if (!countryName) return '';
+            const flags = {
+                'Argentina': '🇦🇷', 'Spain': '🇪🇸', 'Portugal': '🇵🇹', 'Germany': '🇩🇪',
+                'Brazil': '🇧🇷', 'France': '🇫🇷', 'England': '🏴󠁧󠁢󠁥󠁮󠁧󠁿', 'Italy': '🇮🇹',
+                'Netherlands': '🇳🇱', 'Uruguay': '🇺🇾', 'Croatia': '🇭🇷', 'Belgium': '🇧🇪',
+                'Mexico': '🇲🇽', 'USA': '🇺🇸', 'United States': '🇺🇸', 'Colombia': '🇨🇴',
+                'Morocco': '🇲🇦', 'Japan': '🇯🇵', 'Senegal': '🇸🇳', 'Switzerland': '🇨🇭'
+            };
+            return flags[countryName.trim()] || '🏳️';
+        };
+
+        // This officially registers the logic with the framework to prevent race conditions
+        document.addEventListener('alpine:init', () => {
+            Alpine.data('dashboardData', () => ({
+                loading: true,
+                leaderboard: [],
+                latestMatch: null,
+                selectedUser: null,
+                
+                init() {
+                    fetch('data.csv?v=' + new Date().getTime())
+                        .then(response => {
+                            if (!response.ok) throw new Error("Could not find data.csv");
+                            return response.text();
+                        })
+                        .then(csvText => {
+                            Papa.parse(csvText, {
+                                header: true,
+                                dynamicTyping: true,
+                                skipEmptyLines: true,
+                                complete: (results) => {
+                                    this.processData(results.data);
+                                }
+                            });
+                        })
+                        .catch(error => {
+                            console.error("Error loading CSV:", error);
+                            this.loading = false;
+                        });
+                },
+
+                processData(data) {
+                    const users = {};
+                    const finishedGames = new Map();
+
+                    data.forEach(row => {
+                        const name = row['Name'];
+                        if (!name) return;
+
+                        if (!users[name]) {
+                            users[name] = { 
+                                name: name, points: 0, exact_scores: 0, 
+                                formArray: [], predictions: [], 
+                                finalWinner: row['Final Winner'],
+                                flag: getFlagEmoji(row['Final Winner'])
+                            };
+                        }
+
+                        const gamePoints = parseFloat(row['Game_Points']) || 0;
+                        const scorePoints = parseFloat(row['Score_Points']) || 0;
+                        
+                        users[name].points += gamePoints;
+                        if (scorePoints > 0) users[name].exact_scores += 1;
+
+                        const actualHome = row['Games.Score Home'];
+                        const actualAway = row['Games.Score Away'];
+                        const isFinished = actualHome !== null && actualHome !== undefined && actualHome !== '';
+
+                        if (isFinished) {
+                            if (!finishedGames.has(row['Game'])) {
+                                finishedGames.set(row['Game'], {
+                                    game: row['Game'],
+                                    score: `${actualHome} - ${actualAway}`,
+                                    exact: []
+                                });
+                            }
+                            if (scorePoints > 0) {
+                                finishedGames.get(row['Game']).exact.push(name.split(' ')[0]);
+                            }
+
+                            let formEmoji = '⬛';
+                            if (scorePoints > 0) formEmoji = '🟩';
+                            else if (gamePoints > 0) formEmoji = '🟨';
+                            users[name].formArray.push(formEmoji);
+                        }
+
+                        const predHome = row['Score Home'] !== null && row['Score Home'] !== undefined ? row['Score Home'] : '-';
+                        const predAway = row['Score Away'] !== null && row['Score Away'] !== undefined ? row['Score Away'] : '-';
+
+                        users[name].predictions.push({
+                            game: row['Game'],
+                            pred: `${predHome} - ${predAway}`,
+                            actual: isFinished ? `${actualHome} - ${actualAway}` : 'Pending',
+                            points: isFinished ? gamePoints : '-'
+                        });
+                    });
+
+                    Object.values(users).forEach(u => {
+                        u.form = u.formArray.slice(-5).join(' ');
+                    });
+
+                    const finishedList = Array.from(finishedGames.values());
+                    if (finishedList.length > 0) {
+                        this.latestMatch = finishedList[finishedList.length - 1];
+                    }
+
+                    this.leaderboard = Object.values(users).sort((a, b) => {
+                        if (b.points !== a.points) return b.points - a.points;
+                        return b.exact_scores - a.exact_scores;
+                    });
+
+                    this.loading = false;
+                }
+            }));
+        });
+    </script>
+    
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    
     <script>
         tailwind.config = {
             darkMode: 'class',
@@ -21,7 +142,7 @@
         .glass-card { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(10px); border: 1px solid rgba(255, 255, 255, 0.1); }
     </style>
 </head>
-<body class="min-h-screen p-4 md:p-8" x-data="dashboardData()">
+<body class="min-h-screen p-4 md:p-8" x-data="dashboardData">
     
     <div class="max-w-6xl mx-auto">
         <header class="mb-6 text-center md:text-left flex flex-col md:flex-row justify-between items-center">
@@ -38,4 +159,64 @@
 
         <div x-cloak x-show="latestMatch" class="mb-8 bg-gradient-to-r from-blue-900/50 to-indigo-900/50 border border-blue-500/30 rounded-xl p-4 shadow-lg flex flex-col md:flex-row items-center justify-between">
             <div class="flex items-center gap-4 mb-3 md:mb-0">
-                <div class="bg-blue-500/20 p-3 rounded-full text-2
+                <div class="bg-blue-500/20 p-3 rounded-full text-2xl">⚽</div>
+                <div>
+                    <p class="text-blue-300 text-xs uppercase tracking-wider font-bold mb-1">Latest Result</p>
+                    <p class="text-lg font-bold text-white" x-text="latestMatch?.game + ' (' + latestMatch?.score + ')'"></p>
+                </div>
+            </div>
+            <div class="text-center md:text-right">
+                <p class="text-gray-400 text-xs uppercase tracking-wider font-bold mb-1">🎯 Exact Score Guesses</p>
+                <p class="text-accent font-semibold" x-text="latestMatch?.exact?.length > 0 ? latestMatch.exact.join(', ') : 'None this time!'"></p>
+            </div>
+        </div>
+
+        <div x-show="loading" class="text-center text-gray-400 py-10">
+            <p class="text-xl animate-pulse">Loading latest scores...</p>
+        </div>
+
+        <div x-show="!loading" x-cloak class="glass-card rounded-xl shadow-xl overflow-hidden border border-gray-700">
+            <table class="w-full text-left border-collapse">
+                <thead>
+                    <tr class="bg-gray-800 text-gray-300 text-sm uppercase tracking-wider">
+                        <th class="p-4 font-semibold text-center w-20">Rank</th>
+                        <th class="p-4 font-semibold">Colleague</th>
+                        <th class="p-4 font-semibold text-center hidden md:table-cell" title="Recent Streak (Last 5 Games)">Form Guide</th>
+                        <th class="p-4 font-semibold text-center hidden sm:table-cell" title="Number of exact score predictions">Exacts</th>
+                        <th class="p-4 font-semibold text-center text-accent">Points</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <template x-for="(user, index) in leaderboard" :key="user.name">
+                        <tr class="transition cursor-pointer" 
+                            :class="{
+                                'bg-yellow-900/30 border-b-2 border-yellow-500/50 hover:bg-yellow-800/40': index === 0,
+                                'bg-gray-700/40 border-b-2 border-gray-400/50 hover:bg-gray-600/50': index === 1,
+                                'bg-amber-900/30 border-b-2 border-amber-700/50 hover:bg-amber-800/40': index === 2,
+                                'border-b border-gray-800 hover:bg-gray-700/50': index > 2
+                            }"
+                            @click="selectedUser = user">
+                            
+                            <td class="p-4 text-center font-bold">
+                                <span x-show="index === 0" class="text-3xl drop-shadow-md" title="1st Place">🥇</span>
+                                <span x-show="index === 1" class="text-3xl drop-shadow-md" title="2nd Place">🥈</span>
+                                <span x-show="index === 2" class="text-3xl drop-shadow-md" title="3rd Place">🥉</span>
+                                <span x-show="index > 2" class="text-gray-400" x-text="index + 1"></span>
+                            </td>
+                            
+                            <td class="p-4 font-bold text-white flex items-center gap-3">
+                                <div class="w-8 h-8 rounded-full bg-gradient-to-br from-gray-700 to-gray-600 flex items-center justify-center text-xs shadow-inner" x-text="user.name.substring(0,2).toUpperCase()"></div>
+                                <span x-text="user.name" :class="{'text-lg': index < 3}"></span>
+                                <span class="text-xl ml-2 drop-shadow-md" :title="'Supporter: ' + user.finalWinner" x-text="user.flag"></span>
+                            </td>
+                            
+                            <td class="p-4 text-center hidden md:table-cell tracking-widest text-sm" title="🟩 Exact | 🟨 Result | ⬛ Miss" x-text="user.form"></td>
+                            <td class="p-4 text-center font-mono text-gray-400 hidden sm:table-cell" x-text="user.exact_scores"></td>
+                            <td class="p-4 text-center font-bold text-accent" :class="index < 3 ? 'text-2xl' : 'text-xl'" x-text="user.points"></td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+        </div>
+        
+        <div class="mt-6 flex justify-center gap-4 text-xs text-gray
