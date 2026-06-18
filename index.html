@@ -73,8 +73,8 @@
                         users[name].points += gamePoints;
                         if (scorePoints > 0) users[name].exact_scores += 1;
 
-                        const actualHome = row['Games.Score Home'];
-                        const actualAway = row['Games.Score Away'];
+                        const actualHome = row['Games_x002e_Score Home'] !== undefined ? row['Games_x002e_Score Home'] : row['Games.Score Home'];
+                        const actualAway = row['Games_x002e_Score Away'] !== undefined ? row['Games_x002e_Score Away'] : row['Games.Score Away'];
                         const isFinished = actualHome !== null && actualHome !== undefined && actualHome !== '';
 
                         if (isFinished) {
