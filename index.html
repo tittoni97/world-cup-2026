@@ -29,6 +29,7 @@
                 latestMatch: null,
                 selectedUser: null,
                 lastUpdated: 'Fetching...',
+                fetchFailed: false, // Tracks if fetch fails (e.g., in preview or offline)
                 
                 // Toggles
                 showChart: false,
@@ -37,36 +38,62 @@
                 heatmapMatches: [],
                 
                 init() {
-                    // Fetch data and bypass browser cache
-                    fetch('data.csv?v=' + new Date().getTime())
-                        .then(response => {
-                            if (!response.ok) throw new Error("Could not find data.csv");
-                            
-                            // Get the exact time the file was updated on GitHub
-                            const lastMod = response.headers.get('Last-Modified');
-                            if (lastMod) {
-                                const date = new Date(lastMod);
-                                this.lastUpdated = date.toLocaleString([], {month: 'short', day: 'numeric', hour: '2-digit', minute:'2-digit'});
-                            } else {
-                                this.lastUpdated = 'Live Data';
-                            }
-                            return response.text();
-                        })
-                        .then(csvText => {
-                            Papa.parse(csvText, {
-                                header: true,
-                                dynamicTyping: true,
-                                skipEmptyLines: true,
-                                complete: (results) => {
-                                    this.processData(results.data);
+                    try {
+                        // Fetch data and bypass browser cache
+                        fetch('data.csv?v=' + new Date().getTime())
+                            .then(response => {
+                                if (!response.ok) throw new Error("Could not find data.csv");
+                                
+                                // Get the exact time the file was updated on GitHub
+                                const lastMod = response.headers.get('Last-Modified');
+                                if (lastMod) {
+                                    const date = new Date(lastMod);
+                                    this.lastUpdated = date.toLocaleString([], {month: 'short', day: 'numeric', hour: '2-digit', minute:'2-digit'});
+                                } else {
+                                    this.lastUpdated = 'Live Data';
                                 }
+                                return response.text();
+                            })
+                            .then(csvText => {
+                                Papa.parse(csvText, {
+                                    header: true,
+                                    dynamicTyping: true,
+                                    skipEmptyLines: true,
+                                    complete: (results) => {
+                                        this.processData(results.data);
+                                    }
+                                });
+                            })
+                            .catch(error => {
+                                console.error("Error loading CSV:", error);
+                                this.loading = false;
+                                this.lastUpdated = 'Update Failed';
+                                this.fetchFailed = true;
                             });
-                        })
-                        .catch(error => {
-                            console.error("Error loading CSV:", error);
-                            this.loading = false;
-                            this.lastUpdated = 'Update Failed';
-                        });
+                    } catch (error) {
+                        // Catches synchronous errors in preview environments (like Canvas blob URLs)
+                        console.error("Fetch failed to execute (likely running in preview/local):", error);
+                        this.loading = false;
+                        this.lastUpdated = 'Offline / Preview Mode';
+                        this.fetchFailed = true;
+                    }
+                },
+
+                handleTestUpload(event) {
+                    const file = event.target.files[0];
+                    if (!file) return;
+                    this.loading = true;
+                    this.fetchFailed = false;
+                    this.lastUpdated = new Date(file.lastModified).toLocaleString();
+
+                    Papa.parse(file, {
+                        header: true,
+                        dynamicTyping: true,
+                        skipEmptyLines: true,
+                        complete: (results) => {
+                            this.processData(results.data);
+                        }
+                    });
                 },
 
                 processData(data) {
@@ -125,7 +152,7 @@
                             game: row['Game'], date: row['Date'],
                             pred: predHome !== null ? `${predHome} - ${predAway}` : '-',
                             actual: isFinished ? `${actualHome} - ${actualAway}` : 'Pending',
-                            points: isFinished ? (scorePoints > 0 ? scorePoints + gamePoints : gamePoints) : '-'
+                            points: isFinished ? gamePoints : '-'
                         });
                     });
 
@@ -265,6 +292,16 @@
 
         <div x-show="loading" class="text-center text-gray-400 py-20">
             <p class="text-xl animate-pulse">Loading latest scores...</p>
+        </div>
+
+        <!-- FALLBACK FOR PREVIEW / LOCAL ENVIRONMENTS -->
+        <div x-cloak x-show="fetchFailed" class="text-center py-20 border-2 border-dashed border-red-900/50 rounded-xl mb-8 bg-red-900/10 mx-auto max-w-2xl shadow-xl">
+            <h2 class="text-2xl text-red-400 mb-2 font-bold">⚠️ Cannot fetch data.csv</h2>
+            <p class="text-gray-400 mb-6 text-sm px-4">If you are viewing this locally or in a Canvas preview, it cannot automatically download the file. Please load your CSV manually below to test the dashboard.</p>
+            <label class="cursor-pointer bg-gray-700 hover:bg-gray-600 text-white text-sm font-bold py-3 px-6 rounded-lg shadow-lg transition border border-gray-500 inline-block">
+                <span>📂 Select Local CSV</span>
+                <input type="file" accept=".csv" class="hidden" @change="handleTestUpload">
+            </label>
         </div>
 
         <div x-cloak x-show="!loading && leaderboard.length > 0">
