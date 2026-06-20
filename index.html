@@ -6,6 +6,7 @@
     <title>AQA/RMC/GAM World Cup 2026</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.2/papaparse.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     
     <script>
         const getFlagCode = (countryName) => {
@@ -27,11 +28,28 @@
                 leaderboard: [],
                 latestMatch: null,
                 selectedUser: null,
+                lastUpdated: 'Fetching...',
+                
+                // Toggles
+                showChart: false,
+                showHeatmap: false,
+                chartInstance: null,
+                heatmapMatches: [],
                 
                 init() {
+                    // Fetch data and bypass browser cache
                     fetch('data.csv?v=' + new Date().getTime())
                         .then(response => {
                             if (!response.ok) throw new Error("Could not find data.csv");
+                            
+                            // Get the exact time the file was updated on GitHub
+                            const lastMod = response.headers.get('Last-Modified');
+                            if (lastMod) {
+                                const date = new Date(lastMod);
+                                this.lastUpdated = date.toLocaleString([], {month: 'short', day: 'numeric', hour: '2-digit', minute:'2-digit'});
+                            } else {
+                                this.lastUpdated = 'Live Data';
+                            }
                             return response.text();
                         })
                         .then(csvText => {
@@ -47,6 +65,7 @@
                         .catch(error => {
                             console.error("Error loading CSV:", error);
                             this.loading = false;
+                            this.lastUpdated = 'Update Failed';
                         });
                 },
 
@@ -63,7 +82,8 @@
                                 name: name, points: 0, exact_scores: 0, 
                                 formArray: [], predictions: [], 
                                 finalWinner: row['Final Winner'],
-                                flagCode: getFlagCode(row['Final Winner'])
+                                flagCode: getFlagCode(row['Final Winner']),
+                                timeline: [0] 
                             };
                         }
 
@@ -73,21 +93,27 @@
                         users[name].points += gamePoints;
                         if (scorePoints > 0) users[name].exact_scores += 1;
 
+                        const predHome = row['Score Home'];
+                        const predAway = row['Score Away'];
+
                         const actualHome = row['Games_x002e_Score Home'] !== undefined ? row['Games_x002e_Score Home'] : row['Games.Score Home'];
                         const actualAway = row['Games_x002e_Score Away'] !== undefined ? row['Games_x002e_Score Away'] : row['Games.Score Away'];
                         const isFinished = actualHome !== null && actualHome !== undefined && actualHome !== '';
 
                         if (isFinished) {
                             if (!finishedGames.has(row['Game'])) {
+                                // Extract short names for the Heatmap (e.g. MEX v RSA)
+                                const h = row['Home'] ? row['Home'].substring(0,3).toUpperCase() : '???';
+                                const a = row['Away'] ? row['Away'].substring(0,3).toUpperCase() : '???';
+                                
                                 finishedGames.set(row['Game'], {
-                                    game: row['Game'],
-                                    score: `${actualHome} - ${actualAway}`,
-                                    exact: []
+                                    game: row['Game'], date: row['Date'],
+                                    score: `${actualHome} - ${actualAway}`, exact: [],
+                                    shortName: `${h} v ${a}`
                                 });
                             }
-                            if (scorePoints > 0) {
-                                finishedGames.get(row['Game']).exact.push(name.split(' ')[0]);
-                            }
+                            
+                            if (scorePoints > 0) finishedGames.get(row['Game']).exact.push(name.split(' ')[0]);
 
                             let formEmoji = '⬛';
                             if (scorePoints > 0) formEmoji = '🟩';
@@ -95,25 +121,30 @@
                             users[name].formArray.push(formEmoji);
                         }
 
-                        const predHome = row['Score Home'] !== null && row['Score Home'] !== undefined ? row['Score Home'] : '-';
-                        const predAway = row['Score Away'] !== null && row['Score Away'] !== undefined ? row['Score Away'] : '-';
-
                         users[name].predictions.push({
-                            game: row['Game'],
-                            pred: `${predHome} - ${predAway}`,
+                            game: row['Game'], date: row['Date'],
+                            pred: predHome !== null ? `${predHome} - ${predAway}` : '-',
                             actual: isFinished ? `${actualHome} - ${actualAway}` : 'Pending',
-                            points: isFinished ? gamePoints : '-'
+                            points: isFinished ? (scorePoints > 0 ? scorePoints + gamePoints : gamePoints) : '-'
                         });
                     });
 
-                    Object.values(users).forEach(u => {
-                        u.form = u.formArray.slice(-5).join(' ');
-                    });
+                    Object.values(users).forEach(u => { u.form = u.formArray.slice(-5).join(' '); });
 
-                    const finishedList = Array.from(finishedGames.values());
-                    if (finishedList.length > 0) {
-                        this.latestMatch = finishedList[finishedList.length - 1];
-                    }
+                    const finishedList = Array.from(finishedGames.values()).sort((a,b) => new Date(a.date) - new Date(b.date));
+                    if (finishedList.length > 0) this.latestMatch = finishedList[finishedList.length - 1];
+
+                    // Save matches for Heatmap rendering
+                    this.heatmapMatches = finishedList;
+
+                    // Generate Timeline Data
+                    finishedList.forEach(gameObj => {
+                        Object.values(users).forEach(u => {
+                            const pred = u.predictions.find(p => p.game === gameObj.game);
+                            const lastScore = u.timeline[u.timeline.length - 1];
+                            u.timeline.push(lastScore + (pred && pred.points !== '-' ? pred.points : 0));
+                        });
+                    });
 
                     this.leaderboard = Object.values(users).sort((a, b) => {
                         if (b.points !== a.points) return b.points - a.points;
@@ -121,121 +152,242 @@
                     });
 
                     this.loading = false;
+                },
+
+                // HEATMAP HELPERS
+                getHeatmapColor(user, gameName) {
+                    const pred = user.predictions.find(p => p.game === gameName);
+                    if (!pred || pred.points === '-') return 'bg-transparent border border-gray-700'; 
+                    if (pred.points >= 5) return 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]'; // Exact Match
+                    if (pred.points > 0) return 'bg-yellow-500 shadow-[0_0_5px_rgba(234,179,8,0.4)]'; // Correct Result
+                    return 'bg-gray-800'; // Wrong
+                },
+                getHeatmapTooltip(user, gameName) {
+                    const pred = user.predictions.find(p => p.game === gameName);
+                    if (!pred) return 'No prediction';
+                    return `Game: ${pred.game}\nActual Score: ${pred.actual}\n${user.name}'s Guess: ${pred.pred}\nPoints: ${pred.points}`;
+                },
+
+                toggleChart() {
+                    this.showChart = !this.showChart;
+                    if (this.showChart) {
+                        setTimeout(() => this.renderChart(), 100); 
+                    }
+                },
+
+                renderChart() {
+                    const ctx = document.getElementById('raceChart').getContext('2d');
+                    if (this.chartInstance) this.chartInstance.destroy();
+
+                    const labels = Array.from({length: this.leaderboard[0].timeline.length}, (_, i) => i === 0 ? 'Start' : `M${i}`);
+                    const colors = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6'];
+
+                    const top5 = this.leaderboard.slice(0, 5);
+
+                    const datasets = top5.map((u, i) => ({
+                        label: u.name,
+                        data: u.timeline,
+                        borderColor: colors[i],
+                        backgroundColor: 'transparent',
+                        borderWidth: 2, 
+                        tension: 0.3,
+                        pointRadius: 2, 
+                        pointHoverRadius: 5 
+                    }));
+
+                    Chart.defaults.color = '#94a3b8';
+                    this.chartInstance = new Chart(ctx, {
+                        type: 'line',
+                        data: { labels: labels, datasets: datasets },
+                        options: {
+                            responsive: true, maintainAspectRatio: false,
+                            interaction: { mode: 'index', intersect: false },
+                            plugins: {
+                                legend: { position: 'top', labels: { boxWidth: 15, usePointStyle: true, font: {weight: 'bold'} } },
+                                title: { display: true, text: 'Top 5 Title Race', color: '#fff', font: {size: 16} }
+                            },
+                            scales: {
+                                y: { beginAtZero: true, grid: { color: '#334155' } },
+                                x: { grid: { display: false } }
+                            }
+                        }
+                    });
                 }
             }));
         });
     </script>
     
-    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
     
     <script>
-        tailwind.config = {
-            darkMode: 'class',
-            theme: {
-                extend: { colors: { darkbg: '#0f172a', card: '#1e293b', accent: '#10b981' } }
-            }
-        }
+        tailwind.config = { darkMode: 'class', theme: { extend: { colors: { darkbg: '#0f172a', card: '#1e293b', accent: '#10b981' } } } }
     </script>
     <style>
         [x-cloak] { display: none !important; }
         body { background-color: #0f172a; color: #f8fafc; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
         .glass-card { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(10px); border: 1px solid rgba(255, 255, 255, 0.1); }
+        .vertical-text { writing-mode: vertical-rl; transform: rotate(180deg); }
+        /* Heatmap specific scrollbar styling */
+        .heatmap-scroll::-webkit-scrollbar { height: 8px; }
+        .heatmap-scroll::-webkit-scrollbar-track { background: #1e293b; border-radius: 4px; }
+        .heatmap-scroll::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
     </style>
 </head>
 <body class="min-h-screen p-4 md:p-8" x-data="dashboardData">
     
-    <div class="max-w-6xl mx-auto">
-        <header class="mb-6 text-center md:text-left flex flex-col md:flex-row justify-between items-center">
+    <div class="max-w-7xl mx-auto">
+        <header class="mb-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
             <div>
-                <h1 class="text-4xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-accent to-blue-500 mb-2">
+                <h1 class="text-4xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-accent to-blue-500 mb-1">
                     🏆 World Cup 2026 Predictor
                 </h1>
-                <p class="text-gray-400 text-sm">AQA / RMC / GAM Score Competition</p>
+                <p class="text-gray-400 text-sm flex items-center gap-2">
+                    <span>AQA / RMC / GAM Score Competition</span>
+                    <span class="text-gray-600 hidden md:inline">|</span>
+                    <span class="text-blue-400 text-xs font-mono bg-blue-900/30 px-2 py-1 rounded">Last Updated: <span x-text="lastUpdated"></span></span>
+                </p>
             </div>
-            <div class="mt-4 md:mt-0 flex gap-4 text-sm font-semibold bg-card px-4 py-2 rounded-lg border border-gray-700">
-                <span class="text-accent">Live Standings</span>
+
+            <div class="flex gap-4 items-center flex-wrap mt-2 md:mt-0">
+                <!-- Heatmap Toggle with NEW Badge -->
+                <button x-show="leaderboard.length > 0" @click="showHeatmap = !showHeatmap" class="relative bg-orange-600 hover:bg-orange-500 text-white text-sm font-bold py-2 px-4 rounded-lg shadow-lg transition flex items-center gap-2">
+                    🔥 <span x-text="showHeatmap ? 'Hide Heatmap' : 'View Heatmap'"></span>
+                    <span class="absolute -top-2 -right-2 bg-red-500 text-white text-[10px] px-1.5 py-0.5 rounded-full font-black animate-pulse shadow-md border border-red-400">NEW</span>
+                </button>
+
+                <!-- Chart Toggle with NEW Badge -->
+                <button x-show="leaderboard.length > 0" @click="toggleChart()" class="relative bg-blue-600 hover:bg-blue-500 text-white text-sm font-bold py-2 px-4 rounded-lg shadow-lg transition flex items-center gap-2">
+                    📈 <span x-text="showChart ? 'Hide Race' : 'Top 5 Race'"></span>
+                    <span class="absolute -top-2 -right-2 bg-red-500 text-white text-[10px] px-1.5 py-0.5 rounded-full font-black animate-pulse shadow-md border border-red-400">NEW</span>
+                </button>
             </div>
         </header>
 
-        <div x-cloak x-show="latestMatch" class="mb-8 bg-gradient-to-r from-blue-900/50 to-indigo-900/50 border border-blue-500/30 rounded-xl p-4 shadow-lg flex flex-col md:flex-row items-center justify-between">
-            <div class="flex items-center gap-4 mb-3 md:mb-0">
-                <div class="bg-blue-500/20 p-3 rounded-full text-2xl">⚽</div>
-                <div>
-                    <p class="text-blue-300 text-xs uppercase tracking-wider font-bold mb-1">Latest Result</p>
-                    <p class="text-lg font-bold text-white" x-text="latestMatch?.game + ' (' + latestMatch?.score + ')'"></p>
-                </div>
-            </div>
-            <div class="text-center md:text-right">
-                <p class="text-gray-400 text-xs uppercase tracking-wider font-bold mb-1">🎯 Exact Score Guesses</p>
-                <p class="text-accent font-semibold" x-text="latestMatch?.exact?.length > 0 ? latestMatch.exact.join(', ') : 'None this time!'"></p>
-            </div>
-        </div>
-
-        <div x-show="loading" class="text-center text-gray-400 py-10">
+        <div x-show="loading" class="text-center text-gray-400 py-20">
             <p class="text-xl animate-pulse">Loading latest scores...</p>
         </div>
 
-        <div x-show="!loading" x-cloak class="glass-card rounded-xl shadow-xl overflow-hidden border border-gray-700">
-            <table class="w-full text-left border-collapse">
-                <thead>
-                    <tr class="bg-gray-800 text-gray-300 text-sm uppercase tracking-wider">
-                        <th class="p-4 font-semibold text-center w-20">Rank</th>
-                        <th class="p-4 font-semibold">Colleague</th>
-                        <th class="p-4 font-semibold text-center hidden md:table-cell" title="Recent Streak (Last 5 Games)">Form Guide</th>
-                        <th class="p-4 font-semibold text-center hidden sm:table-cell" title="Number of exact score predictions">Exacts</th>
-                        <th class="p-4 font-semibold text-center text-accent">Points</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <template x-for="(user, index) in leaderboard" :key="user.name">
-                        <tr class="transition cursor-pointer" 
-                            :class="{
-                                'bg-yellow-900/30 border-b-2 border-yellow-500/50 hover:bg-yellow-800/40': index === 0,
-                                'bg-gray-700/40 border-b-2 border-gray-400/50 hover:bg-gray-600/50': index === 1,
-                                'bg-amber-900/30 border-b-2 border-amber-700/50 hover:bg-amber-800/40': index === 2,
-                                'border-b border-gray-800 hover:bg-gray-700/50': index > 2
-                            }"
-                            @click="selectedUser = user">
-                            
-                            <td class="p-4 text-center font-bold">
-                                <span x-show="index === 0" class="text-3xl drop-shadow-md" title="1st Place">🥇</span>
-                                <span x-show="index === 1" class="text-3xl drop-shadow-md" title="2nd Place">🥈</span>
-                                <span x-show="index === 2" class="text-3xl drop-shadow-md" title="3rd Place">🥉</span>
-                                <span x-show="index > 2" class="text-gray-400" x-text="index + 1"></span>
-                            </td>
-                            
-                            <td class="p-4 font-bold text-white flex items-center gap-3">
-                                <div class="w-8 h-8 rounded-full bg-gradient-to-br from-gray-700 to-gray-600 flex items-center justify-center text-xs shadow-inner shrink-0" x-text="user.name.substring(0,2).toUpperCase()"></div>
-                                <span x-text="user.name" :class="{'text-lg': index < 3}"></span>
-                                
-                                <template x-if="user.flagCode">
-                                    <img :src="'https://flagcdn.com/w40/' + user.flagCode + '.png'" 
-                                         class="w-6 h-auto ml-2 shadow-sm rounded-sm" 
-                                         :title="'Supporter: ' + user.finalWinner" 
-                                         :alt="user.finalWinner">
+        <div x-cloak x-show="!loading && leaderboard.length > 0">
+            
+            <!-- PREDICTION HEATMAP -->
+            <div x-show="showHeatmap" x-collapse class="mb-8">
+                <div class="glass-card p-6 rounded-xl border border-gray-700 shadow-2xl relative">
+                    <h3 class="text-xl font-bold text-white mb-4 flex items-center gap-2">🔥 Prediction Heatmap</h3>
+                    
+                    <div class="overflow-x-auto heatmap-scroll pb-4">
+                        <table class="text-xs border-separate" style="border-spacing: 3px;">
+                            <thead>
+                                <tr>
+                                    <!-- Sticky Header Column -->
+                                    <th class="p-2 text-left sticky left-0 z-10 w-32 border-b border-gray-700 bg-[#1e293b]">Colleague</th>
+                                    
+                                    <!-- Match Columns -->
+                                    <template x-for="match in heatmapMatches" :key="match.game">
+                                        <th class="p-1 pb-2 border-b border-gray-700 align-bottom w-8">
+                                            <div class="vertical-text text-gray-400 font-mono tracking-widest whitespace-nowrap mx-auto" x-text="match.shortName"></div>
+                                        </th>
+                                    </template>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <template x-for="user in leaderboard" :key="user.name">
+                                    <tr class="hover:bg-gray-800/50 transition">
+                                        <!-- Sticky User Column -->
+                                        <td class="p-2 text-left font-bold text-white sticky left-0 z-10 whitespace-nowrap border-r border-gray-700 bg-[#1e293b]" x-text="user.name"></td>
+                                        
+                                        <!-- Colored Squares -->
+                                        <template x-for="match in heatmapMatches" :key="match.game">
+                                            <td class="w-8 h-8 rounded-sm cursor-pointer border border-black/20"
+                                                :class="getHeatmapColor(user, match.game)"
+                                                :title="getHeatmapTooltip(user, match.game)">
+                                            </td>
+                                        </template>
+                                    </tr>
                                 </template>
-                            </td>
-                            
-                            <td class="p-4 text-center hidden md:table-cell tracking-widest text-sm" title="🟩 Exact | 🟨 Result | ⬛ Miss" x-text="user.form"></td>
-                            <td class="p-4 text-center font-mono text-gray-400 hidden sm:table-cell" x-text="user.exact_scores"></td>
-                            <td class="p-4 text-center font-bold text-accent" :class="index < 3 ? 'text-2xl' : 'text-xl'" x-text="user.points"></td>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <!-- Legend -->
+                    <div class="mt-4 flex gap-6 text-xs text-gray-400 justify-center flex-wrap">
+                        <span class="flex items-center gap-2"><div class="w-4 h-4 bg-green-500 rounded-sm shadow-[0_0_8px_rgba(34,197,94,0.6)]"></div> Exact Score</span>
+                        <span class="flex items-center gap-2"><div class="w-4 h-4 bg-yellow-500 rounded-sm shadow-[0_0_5px_rgba(234,179,8,0.4)]"></div> Correct Result</span>
+                        <span class="flex items-center gap-2"><div class="w-4 h-4 bg-gray-800 rounded-sm border border-black/20"></div> Wrong</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- RACE CHART -->
+            <div x-show="showChart" x-collapse class="mb-8">
+                <div class="glass-card p-6 rounded-xl border border-gray-700 shadow-2xl">
+                    <div class="w-full h-[400px]">
+                        <canvas id="raceChart"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <!-- LATEST MATCH -->
+            <div x-show="latestMatch" class="mb-8 bg-gradient-to-r from-blue-900/50 to-indigo-900/50 border border-blue-500/30 rounded-xl p-4 shadow-lg flex flex-col md:flex-row items-center justify-between">
+                <div class="flex items-center gap-4 mb-3 md:mb-0">
+                    <div class="bg-blue-500/20 p-3 rounded-full text-2xl">⚽</div>
+                    <div>
+                        <p class="text-blue-300 text-xs uppercase tracking-wider font-bold mb-1">Latest Result</p>
+                        <p class="text-lg font-bold text-white" x-text="latestMatch?.game + ' (' + latestMatch?.score + ')'"></p>
+                    </div>
+                </div>
+                <div class="text-center md:text-right">
+                    <p class="text-gray-400 text-xs uppercase tracking-wider font-bold mb-1">🎯 Exact Score Guesses</p>
+                    <p class="text-accent font-semibold" x-text="latestMatch?.exact?.length > 0 ? latestMatch.exact.join(', ') : 'None this time!'"></p>
+                </div>
+            </div>
+
+            <!-- LEADERBOARD -->
+            <div class="glass-card rounded-xl shadow-xl overflow-hidden border border-gray-700">
+                <table class="w-full text-left border-collapse">
+                    <thead>
+                        <tr class="bg-gray-800 text-gray-300 text-sm uppercase tracking-wider">
+                            <th class="p-4 font-semibold text-center w-20">Rank</th>
+                            <th class="p-4 font-semibold">Colleague</th>
+                            <th class="p-4 font-semibold text-center hidden md:table-cell" title="Recent Streak (Last 5 Games)">Form Guide</th>
+                            <th class="p-4 font-semibold text-center hidden sm:table-cell" title="Number of exact score predictions">Exacts</th>
+                            <th class="p-4 font-semibold text-center text-accent">Points</th>
                         </tr>
-                    </template>
-                </tbody>
-            </table>
-        </div>
-        
-        <div class="mt-6 flex justify-center gap-4 text-xs text-gray-500">
-            <span>🟩 Exact Score (8pts)</span>
-            <span>🟨 Correct Result (3pts)</span>
-            <span>⬛ Zero Points</span>
+                    </thead>
+                    <tbody>
+                        <template x-for="(user, index) in leaderboard" :key="user.name">
+                            <tr class="transition cursor-pointer border-b border-gray-800 hover:bg-gray-700/50" @click="selectedUser = user">
+                                <td class="p-4 text-center font-bold">
+                                    <span x-show="index === 0" class="text-3xl drop-shadow-md" title="1st Place">🥇</span>
+                                    <span x-show="index === 1" class="text-3xl drop-shadow-md" title="2nd Place">🥈</span>
+                                    <span x-show="index === 2" class="text-3xl drop-shadow-md" title="3rd Place">🥉</span>
+                                    <span x-show="index > 2" class="text-gray-400" x-text="index + 1"></span>
+                                </td>
+                                
+                                <td class="p-4 font-bold text-white flex items-center gap-3">
+                                    <div class="w-8 h-8 rounded-full bg-gradient-to-br from-gray-700 to-gray-600 flex items-center justify-center text-xs shadow-inner shrink-0" x-text="user.name.substring(0,2).toUpperCase()"></div>
+                                    <span x-text="user.name" :class="{'text-lg': index < 3}"></span>
+                                    <template x-if="user.flagCode">
+                                        <img :src="'https://flagcdn.com/w40/' + user.flagCode + '.png'" class="w-6 h-auto ml-2 shadow-sm rounded-sm" :title="'Supporter: ' + user.finalWinner" :alt="user.finalWinner">
+                                    </template>
+                                </td>
+                                
+                                <td class="p-4 text-center hidden md:table-cell tracking-widest text-sm" x-text="user.form"></td>
+                                <td class="p-4 text-center font-mono text-gray-400 hidden sm:table-cell" x-text="user.exact_scores"></td>
+                                <td class="p-4 text-center font-bold text-accent" :class="index < 3 ? 'text-2xl' : 'text-xl'" x-text="user.points"></td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
         </div>
     </div>
 
+    <!-- USER MODAL -->
     <div x-cloak x-show="selectedUser" class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4" @click.self="selectedUser = null">
         <div class="bg-card w-full max-w-3xl rounded-2xl shadow-2xl border border-gray-700 overflow-hidden flex flex-col max-h-[85vh]">
             <template x-if="selectedUser">
-                <div class="flex flex-col overflow-hidden max-h-[85vh]"> <div class="p-6 border-b border-gray-700 flex justify-between items-center bg-gray-800 shrink-0">
+                <div class="flex flex-col overflow-hidden max-h-[85vh]">
+                    <div class="p-6 border-b border-gray-700 flex justify-between items-center bg-gray-800 shrink-0">
                         <h2 class="text-2xl font-bold text-white flex items-center">
                             <span x-text="selectedUser.name + '\'s Guesses'"></span>
                             <template x-if="selectedUser.flagCode">
@@ -244,7 +396,8 @@
                         </h2>
                         <button @click="selectedUser = null" class="text-gray-400 hover:text-white text-3xl font-bold leading-none">&times;</button>
                     </div>
-                    <div class="p-6 overflow-y-auto flex-1 min-h-0"> <table class="w-full text-sm">
+                    <div class="p-6 overflow-y-auto flex-1 min-h-0">
+                        <table class="w-full text-sm">
                             <thead>
                                 <tr class="text-gray-400 border-b border-gray-700">
                                     <th class="pb-2 text-left">Match</th>
