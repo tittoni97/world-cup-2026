@@ -8,9 +8,9 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.2/papaparse.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     
-    <!-- Alpine.js Collapse Plugin (Required to prevent iOS freezes on transition panels) -->
+    <!-- Alpine.js Plugins (Must have defer) -->
     <script src="https://cdn.jsdelivr.net/npm/@alpinejs/collapse@3.x.x/dist/cdn.min.js"></script>
-    <!-- Alpine.js Core -->
+    <!-- Alpine.js Core (Must have defer to prevent synchronous race crashes) -->
     <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
     
     <script>
@@ -27,223 +27,272 @@
             return codes[countryName.trim()] || '';
         };
 
-        document.addEventListener('alpine:init', () => {
-            Alpine.data('dashboardData', () => ({
-                loading: true,
-                leaderboard: [],
-                latestMatch: null,
-                selectedUser: null,
-                lastUpdated: 'Fetching...',
-                fetchFailed: false,
-                
-                // Toggles
-                showChart: false,
-                showHeatmap: false,
-                chartInstance: null,
-                heatmapMatches: [],
-                
-                init() {
-                    // Fetch data and bypass browser cache
-                    fetch('data.csv?v=' + new Date().getTime())
-                        .then(response => {
-                            if (!response.ok) throw new Error("Could not find data.csv");
-                            
-                            // Get the exact time the file was updated on GitHub safely
-                            const lastMod = response.headers.get('Last-Modified');
-                            if (lastMod) {
-                                const date = new Date(lastMod);
-                                // iOS / Safari Date check to prevent Alpine.js silent crashes
-                                if (!isNaN(date.getTime())) {
-                                    this.lastUpdated = date.toLocaleString([], {month: 'short', day: 'numeric', hour: '2-digit', minute:'2-digit'});
-                                } else {
-                                    this.lastUpdated = 'Live Data';
-                                }
-                            } else {
-                                this.lastUpdated = 'Live Data';
-                            }
-                            return response.text();
-                        })
-                        .then(csvText => {
-                            Papa.parse(csvText, {
-                                header: true,
-                                dynamicTyping: true,
-                                skipEmptyLines: true,
-                                complete: (results) => {
-                                    this.processData(results.data);
-                                }
-                            });
-                        })
-                        .catch(error => {
-                            console.error("Error loading CSV:", error);
-                            this.loading = false;
-                            this.lastUpdated = 'Update Failed';
-                            this.fetchFailed = true;
-                        });
-                },
+        // Highly robust date parsing helper supporting Excel serial numbers and Key dates
+        const parseExcelOrStandardDate = (val) => {
+            if (!val) return new Date(0);
+            
+            // If it is an Excel serial date number
+            let num = parseFloat(val);
+            if (!isNaN(num) && num > 40000 && num < 60000) {
+                return new Date((num - 25569) * 86400 * 1000);
+            }
+            
+            // If it is a string containing an underscore (like Key)
+            let str = String(val).trim();
+            if (str.includes('_')) {
+                str = str.split('_')[0];
+            }
+            
+            // If it matches DD/MM/YYYY format
+            const parts = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+            if (parts) {
+                const day = parseInt(parts[1], 10);
+                const month = parseInt(parts[2], 10) - 1; // 0-indexed in JS
+                const year = parseInt(parts[3], 10);
+                return new Date(year, month, day);
+            }
+            
+            const parsed = new Date(str);
+            return isNaN(parsed.getTime()) ? new Date(0) : parsed;
+        };
 
-                handleLocalUpload(event) {
-                    const file = event.target.files[0];
-                    if (!file) return;
-                    this.loading = true;
-                    this.fetchFailed = false;
-                    this.lastUpdated = new Date(file.lastModified).toLocaleString();
-
-                    Papa.parse(file, {
-                        header: true,
-                        dynamicTyping: true,
-                        skipEmptyLines: true,
-                        complete: (results) => {
-                            this.processData(results.data);
-                        }
-                    });
-                },
-
-                processData(data) {
-                    const users = {};
-                    const finishedGames = new Map();
-
-                    data.forEach(row => {
-                        const name = row['Name'];
-                        if (!name) return;
-
-                        if (!users[name]) {
-                            users[name] = { 
-                                name: name, points: 0, exact_scores: 0, 
-                                formArray: [], predictions: [], 
-                                finalWinner: row['Final Winner'],
-                                flagCode: getFlagCode(row['Final Winner']),
-                                timeline: [0] 
-                            };
-                        }
-
-                        const gamePoints = parseFloat(row['Game_Points']) || 0;
-                        const scorePoints = parseFloat(row['Score_Points']) || 0;
-                        
-                        users[name].points += gamePoints;
-                        if (scorePoints > 0) users[name].exact_scores += 1;
-
-                        const predHome = row['Score Home'];
-                        const predAway = row['Score Away'];
-
-                        const actualHome = row['Games_x002e_Score Home'] !== undefined ? row['Games_x002e_Score Home'] : row['Games.Score Home'];
-                        const actualAway = row['Games_x002e_Score Away'] !== undefined ? row['Games_x002e_Score Away'] : row['Games.Score Away'];
-                        const isFinished = actualHome !== null && actualHome !== undefined && actualHome !== '';
-
-                        if (isFinished) {
-                            if (!finishedGames.has(row['Game'])) {
-                                // Extract short names for the Heatmap (e.g. MEX v RSA)
-                                const h = row['Home'] ? row['Home'].substring(0,3).toUpperCase() : '???';
-                                const a = row['Away'] ? row['Away'].substring(0,3).toUpperCase() : '???';
-                                
-                                finishedGames.set(row['Game'], {
-                                    game: row['Game'], date: row['Date'],
-                                    score: `${actualHome} - ${actualAway}`, exact: [],
-                                    shortName: `${h} v ${a}`
+        // Complete Alpine Component Setup
+        const registerDashboardComponent = () => {
+            if (window.Alpine && !Alpine.components['dashboardData']) {
+                Alpine.data('dashboardData', () => ({
+                    loading: true,
+                    leaderboard: [],
+                    latestMatch: null,
+                    selectedUser: null,
+                    lastUpdated: 'Fetching...',
+                    fetchFailed: false,
+                    
+                    // Toggles
+                    showChart: false,
+                    showHeatmap: false,
+                    chartInstance: null,
+                    heatmapMatches: [],
+                    
+                    init() {
+                        try {
+                            // Fetch data and bypass browser cache
+                            fetch('data.csv?v=' + new Date().getTime())
+                                .then(response => {
+                                    if (!response.ok) throw new Error("Could not find data.csv");
+                                    
+                                    // Get the exact time the file was updated on GitHub safely
+                                    const lastMod = response.headers.get('Last-Modified');
+                                    if (lastMod) {
+                                        const date = new Date(lastMod);
+                                        // iOS / Safari Date check to prevent Alpine.js silent crashes
+                                        if (!isNaN(date.getTime())) {
+                                            this.lastUpdated = date.toLocaleString([], {month: 'short', day: 'numeric', hour: '2-digit', minute:'2-digit'});
+                                        } else {
+                                            this.lastUpdated = 'Live Data';
+                                        }
+                                    } else {
+                                        this.lastUpdated = 'Live Data';
+                                    }
+                                    return response.text();
+                                })
+                                .then(csvText => {
+                                    Papa.parse(csvText, {
+                                        header: true,
+                                        dynamicTyping: true,
+                                        skipEmptyLines: true,
+                                        complete: (results) => {
+                                            this.processData(results.data);
+                                        }
+                                    });
+                                })
+                                .catch(error => {
+                                    console.error("Error loading CSV:", error);
+                                    this.loading = false;
+                                    this.lastUpdated = 'Update Failed';
+                                    this.fetchFailed = true;
                                 });
-                            }
-                            
-                            if (scorePoints > 0) finishedGames.get(row['Game']).exact.push(name.split(' ')[0]);
-
-                            let formEmoji = '⬛';
-                            if (scorePoints > 0) formEmoji = '🟩';
-                            else if (gamePoints > 0) formEmoji = '🟨';
-                            users[name].formArray.push(formEmoji);
+                        } catch (error) {
+                            console.error("Fetch crashed synchronously (expected on local preview):", error);
+                            this.loading = false;
+                            this.lastUpdated = 'Preview Mode';
+                            this.fetchFailed = true;
                         }
+                    },
 
-                        users[name].predictions.push({
-                            game: row['Game'], date: row['Date'],
-                            pred: predHome !== null ? `${predHome} - ${predAway}` : '-',
-                            actual: isFinished ? `${actualHome} - ${actualAway}` : 'Pending',
-                            points: isFinished ? gamePoints : '-'
+                    handleLocalUpload(event) {
+                        const file = event.target.files[0];
+                        if (!file) return;
+                        this.loading = true;
+                        this.fetchFailed = false;
+                        this.lastUpdated = new Date(file.lastModified).toLocaleString();
+
+                        Papa.parse(file, {
+                            header: true,
+                            dynamicTyping: true,
+                            skipEmptyLines: true,
+                            complete: (results) => {
+                                this.processData(results.data);
+                            }
                         });
-                    });
+                    },
 
-                    Object.values(users).forEach(u => { u.form = u.formArray.slice(-5).join(' '); });
+                    processData(data) {
+                        try {
+                            const users = {};
+                            const finishedGames = new Map();
 
-                    const finishedList = Array.from(finishedGames.values()).sort((a,b) => new Date(a.date) - new Date(b.date));
-                    if (finishedList.length > 0) this.latestMatch = finishedList[finishedList.length - 1];
+                            data.forEach(row => {
+                                const name = row['Name'];
+                                if (!name) return;
 
-                    // Save matches for Heatmap rendering
-                    this.heatmapMatches = finishedList;
+                                if (!users[name]) {
+                                    users[name] = { 
+                                        name: name, points: 0, exact_scores: 0, 
+                                        formArray: [], predictions: [], 
+                                        finalWinner: row['Final Winner'],
+                                        flagCode: getFlagCode(row['Final Winner']),
+                                        timeline: [0] 
+                                    };
+                                }
 
-                    // Generate Timeline Data
-                    finishedList.forEach(gameObj => {
-                        Object.values(users).forEach(u => {
-                            const pred = u.predictions.find(p => p.game === gameObj.game);
-                            const lastScore = u.timeline[u.timeline.length - 1];
-                            u.timeline.push(lastScore + (pred && pred.points !== '-' ? pred.points : 0));
+                                const gamePoints = parseFloat(row['Game_Points']) || 0;
+                                const scorePoints = parseFloat(row['Score_Points']) || 0;
+                                
+                                users[name].points += gamePoints;
+                                if (scorePoints > 0) users[name].exact_scores += 1;
+
+                                const predHome = row['Score Home'];
+                                const predAway = row['Score Away'];
+
+                                const actualHome = row['Games_x002e_Score Home'] !== undefined ? row['Games_x002e_Score Home'] : row['Games.Score Home'];
+                                const actualAway = row['Games_x002e_Score Away'] !== undefined ? row['Games_x002e_Score Away'] : row['Games.Score Away'];
+                                const isFinished = actualHome !== null && actualHome !== undefined && actualHome !== '';
+
+                                if (isFinished) {
+                                    if (!finishedGames.has(row['Game'])) {
+                                        // Extract short names for the Heatmap (e.g. MEX v RSA)
+                                        const h = row['Home'] ? row['Home'].substring(0,3).toUpperCase() : '???';
+                                        const a = row['Away'] ? row['Away'].substring(0,3).toUpperCase() : '???';
+                                        
+                                        finishedGames.set(row['Game'], {
+                                            game: row['Game'], date: row['Date'],
+                                            score: `${actualHome} - ${actualAway}`, exact: [],
+                                            shortName: `${h} v ${a}`
+                                        });
+                                    }
+                                    
+                                    if (scorePoints > 0) finishedGames.get(row['Game']).exact.push(name.split(' ')[0]);
+
+                                    let formEmoji = '⬛';
+                                    if (scorePoints > 0) formEmoji = '🟩';
+                                    else if (gamePoints > 0) formEmoji = '🟨';
+                                    users[name].formArray.push(formEmoji);
+                                }
+
+                                users[name].predictions.push({
+                                    game: row['Game'], date: row['Date'],
+                                    pred: predHome !== null ? `${predHome} - ${predAway}` : '-',
+                                    actual: isFinished ? `${actualHome} - ${actualAway}` : 'Pending',
+                                    points: isFinished ? gamePoints : '-'
+                                });
+                            });
+
+                            Object.values(users).forEach(u => { u.form = u.formArray.slice(-5).join(' '); });
+
+                            const finishedList = Array.from(finishedGames.values()).sort((a,b) => parseExcelOrStandardDate(a.date) - parseExcelOrStandardDate(b.date));
+                            if (finishedList.length > 0) this.latestMatch = finishedList[finishedList.length - 1];
+
+                            // Save matches for Heatmap rendering
+                            this.heatmapMatches = finishedList;
+
+                            // Generate Timeline Data
+                            finishedList.forEach(gameObj => {
+                                Object.values(users).forEach(u => {
+                                    const pred = u.predictions.find(p => p.game === gameObj.game);
+                                    const lastScore = u.timeline[u.timeline.length - 1];
+                                    u.timeline.push(lastScore + (pred && pred.points !== '-' ? pred.points : 0));
+                                });
+                            });
+
+                            this.leaderboard = Object.values(users).sort((a, b) => {
+                                if (b.points !== a.points) return b.points - a.points;
+                                return b.exact_scores - a.exact_scores;
+                            });
+
+                            this.loading = false;
+                        } catch (err) {
+                            console.error("Error processing data layout:", err);
+                            this.loading = false;
+                            this.fetchFailed = true;
+                        }
+                    },
+
+                    // HEATMAP HELPERS
+                    getHeatmapColor(user, gameName) {
+                        const pred = user.predictions.find(p => p.game === gameName);
+                        if (!pred || pred.points === '-') return 'bg-transparent border border-gray-700/60'; 
+                        if (pred.points >= 5) return 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]'; // Exact Match
+                        if (pred.points > 0) return 'bg-yellow-500 shadow-[0_0_5px_rgba(234,179,8,0.4)]'; // Correct Result
+                        return 'bg-gray-800'; // Wrong
+                    },
+                    getHeatmapTooltip(user, gameName) {
+                        const pred = user.predictions.find(p => p.game === gameName);
+                        if (!pred) return 'No prediction';
+                        return `Game: ${pred.game}\nActual Score: ${pred.actual}\n${user.name}'s Guess: ${pred.pred}\nPoints: ${pred.points}`;
+                    },
+
+                    toggleChart() {
+                        this.showChart = !this.showChart;
+                        if (this.showChart) {
+                            setTimeout(() => this.renderChart(), 100); 
+                        }
+                    },
+
+                    renderChart() {
+                        const ctx = document.getElementById('raceChart').getContext('2d');
+                        if (this.chartInstance) this.chartInstance.destroy();
+
+                        const labels = Array.from({length: this.leaderboard[0].timeline.length}, (_, i) => i === 0 ? 'Start' : `M${i}`);
+                        const colors = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6'];
+
+                        const top5 = this.leaderboard.slice(0, 5);
+
+                        const datasets = top5.map((u, i) => ({
+                            label: u.name,
+                            data: u.timeline,
+                            borderColor: colors[i],
+                            backgroundColor: 'transparent',
+                            borderWidth: 2, 
+                            tension: 0.3,
+                            pointRadius: 2, 
+                            pointHoverRadius: 5 
+                        }));
+
+                        Chart.defaults.color = '#94a3b8';
+                        this.chartInstance = new Chart(ctx, {
+                            type: 'line',
+                            data: { labels: labels, datasets: datasets },
+                            options: {
+                                responsive: true, maintainAspectRatio: false,
+                                interaction: { mode: 'index', intersect: false },
+                                plugins: {
+                                    legend: { position: 'top', labels: { boxWidth: 15, usePointStyle: true, font: {weight: 'bold'} } },
+                                    title: { display: true, text: 'Top 5 Title Race', color: '#fff', font: {size: 16} }
+                                },
+                                scales: {
+                                    y: { beginAtZero: true, grid: { color: '#334155' } },
+                                    x: { grid: { display: false } }
+                                }
+                            }
                         });
-                    });
-
-                    this.leaderboard = Object.values(users).sort((a, b) => {
-                        if (b.points !== a.points) return b.points - a.points;
-                        return b.exact_scores - a.exact_scores;
-                    });
-
-                    this.loading = false;
-                },
-
-                // HEATMAP HELPERS
-                getHeatmapColor(user, gameName) {
-                    const pred = user.predictions.find(p => p.game === gameName);
-                    if (!pred || pred.points === '-') return 'bg-transparent border border-gray-700/60'; 
-                    if (pred.points >= 5) return 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]'; // Exact Match
-                    if (pred.points > 0) return 'bg-yellow-500 shadow-[0_0_5px_rgba(234,179,8,0.4)]'; // Correct Result
-                    return 'bg-gray-800'; // Wrong
-                },
-                getHeatmapTooltip(user, gameName) {
-                    const pred = user.predictions.find(p => p.game === gameName);
-                    if (!pred) return 'No prediction';
-                    return `Game: ${pred.game}\nActual Score: ${pred.actual}\n${user.name}'s Guess: ${pred.pred}\nPoints: ${pred.points}`;
-                },
-
-                toggleChart() {
-                    this.showChart = !this.showChart;
-                    if (this.showChart) {
-                        setTimeout(() => this.renderChart(), 100); 
                     }
-                },
+                }));
+            }
+        };
 
-                renderChart() {
-                    const ctx = document.getElementById('raceChart').getContext('2d');
-                    if (this.chartInstance) this.chartInstance.destroy();
-
-                    const labels = Array.from({length: this.leaderboard[0].timeline.length}, (_, i) => i === 0 ? 'Start' : `M${i}`);
-                    const colors = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6'];
-
-                    const top5 = this.leaderboard.slice(0, 5);
-
-                    const datasets = top5.map((u, i) => ({
-                        label: u.name,
-                        data: u.timeline,
-                        borderColor: colors[i],
-                        backgroundColor: 'transparent',
-                        borderWidth: 2, 
-                        tension: 0.3,
-                        pointRadius: 2, 
-                        pointHoverRadius: 5 
-                    }));
-
-                    Chart.defaults.color = '#94a3b8';
-                    this.chartInstance = new Chart(ctx, {
-                        type: 'line',
-                        data: { labels: labels, datasets: datasets },
-                        options: {
-                            responsive: true, maintainAspectRatio: false,
-                            interaction: { mode: 'index', intersect: false },
-                            plugins: {
-                                legend: { position: 'top', labels: { boxWidth: 15, usePointStyle: true, font: {weight: 'bold'} } },
-                                title: { display: true, text: 'Top 5 Title Race', color: '#fff', font: {size: 16} }
-                            },
-                            scales: {
-                                y: { beginAtZero: true, grid: { color: '#334155' } },
-                                x: { grid: { display: false } }
-                            }
-                        }
-                    });
-                }
-            }));
-        });
+        // Dual Safety Initialization Strategy
+        document.addEventListener('alpine:init', registerDashboardComponent);
+        window.addEventListener('DOMContentLoaded', registerDashboardComponent);
     </script>
     
     <script>
@@ -332,7 +381,7 @@
                             <thead>
                                 <tr>
                                     <!-- Sticky Header Column (Explicit solid backgrounds for iOS Safari render overlaps) -->
-                                    <th class="p-2 text-left sticky left-0 z-20 w-32 min-w-[128px] border-b border-gray-700 bg-[#1e293b]">Colleague</th>
+                                    <th class="p-2 text-left sticky left-0 z-10 w-32 min-w-[128px] border-b border-gray-700 bg-[#1e293b]">Colleague</th>
                                     
                                     <!-- Match Columns -->
                                     <template x-for="match in heatmapMatches" :key="match.game">
@@ -414,72 +463,4 @@
                                 <tr class="transition cursor-pointer border-b border-gray-800 hover:bg-gray-700/50" @click="selectedUser = user">
                                     <td class="p-4 text-center font-bold">
                                         <span x-show="index === 0" class="text-3xl drop-shadow-md" title="1st Place">🥇</span>
-                                        <span x-show="index === 1" class="text-3xl drop-shadow-md" title="2nd Place">🥈</span>
-                                        <span x-show="index === 2" class="text-3xl drop-shadow-md" title="3rd Place">🥉</span>
-                                        <span x-show="index > 2" class="text-gray-400" x-text="index + 1"></span>
-                                    </td>
-                                    
-                                    <td class="p-4 font-bold text-white flex items-center gap-3">
-                                        <div class="w-8 h-8 rounded-full bg-gradient-to-br from-gray-700 to-gray-600 flex items-center justify-center text-xs shadow-inner shrink-0" x-text="user.name.substring(0,2).toUpperCase()"></div>
-                                        <span x-text="user.name" :class="{'text-lg': index < 3}"></span>
-                                        <template x-if="user.flagCode">
-                                            <img :src="'https://flagcdn.com/w40/' + user.flagCode + '.png'" class="w-6 h-auto ml-2 shadow-sm rounded-sm" :title="'Supporter: ' + user.finalWinner" :alt="user.finalWinner">
-                                        </template>
-                                    </td>
-                                    
-                                    <td class="p-4 text-center hidden md:table-cell tracking-widest text-sm" x-text="user.form"></td>
-                                    <td class="p-4 text-center font-mono text-gray-400 hidden sm:table-cell" x-text="user.exact_scores"></td>
-                                    <td class="p-4 text-center font-bold text-accent" :class="index < 3 ? 'text-2xl' : 'text-xl'" x-text="user.points"></td>
-                                </tr>
-                            </template>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- USER MODAL -->
-    <div x-cloak x-show="selectedUser" class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4" @click.self="selectedUser = null">
-        <div class="bg-card w-full max-w-3xl rounded-2xl shadow-2xl border border-gray-700 overflow-hidden flex flex-col max-h-[85vh]">
-            <template x-if="selectedUser">
-                <div class="flex flex-col overflow-hidden max-h-[85vh]">
-                    <div class="p-6 border-b border-gray-700 flex justify-between items-center bg-gray-800 shrink-0">
-                        <h2 class="text-2xl font-bold text-white flex items-center">
-                            <span x-text="selectedUser.name + '\'s Guesses'"></span>
-                            <template x-if="selectedUser.flagCode">
-                                <img :src="'https://flagcdn.com/w40/' + selectedUser.flagCode + '.png'" class="w-8 h-auto ml-3 shadow-sm rounded-sm">
-                            </template>
-                        </h2>
-                        <button @click="selectedUser = null" class="text-gray-400 hover:text-white text-3xl font-bold leading-none">&times;</button>
-                    </div>
-                    <div class="p-6 overflow-y-auto flex-1 min-h-0">
-                        <table class="w-full text-sm">
-                            <thead>
-                                <tr class="text-gray-400 border-b border-gray-700">
-                                    <th class="pb-2 text-left">Match</th>
-                                    <th class="pb-2 text-center">Prediction</th>
-                                    <th class="pb-2 text-center">Actual Result</th>
-                                    <th class="pb-2 text-center text-accent">Points</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <template x-for="pred in selectedUser.predictions">
-                                    <tr class="border-b border-gray-800/50 hover:bg-gray-800/30 transition">
-                                        <td class="py-3 text-gray-200 font-medium" x-text="pred.game"></td>
-                                        <td class="py-3 text-center font-mono bg-gray-800/30 rounded" x-text="pred.pred"></td>
-                                        <td class="py-3 text-center font-mono text-gray-400" x-text="pred.actual"></td>
-                                        <td class="py-3 text-center font-bold" 
-                                            :class="pred.points > 3 ? 'text-accent' : (pred.points > 0 ? 'text-yellow-400' : 'text-gray-600')" 
-                                            x-text="pred.points > 0 ? '+' + pred.points : '0'"></td>
-                                    </tr>
-                                </template>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </template>
-        </div>
-    </div>
-</body>
-</html>
+                                        <span x-show="index === 1" class="text-3xl drop-shadow-md
