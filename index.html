@@ -10,8 +10,6 @@
     
     <!-- Alpine.js Plugins (Must have defer) -->
     <script src="https://cdn.jsdelivr.net/npm/@alpinejs/collapse@3.x.x/dist/cdn.min.js"></script>
-    <!-- Alpine.js Core (Must have defer to prevent synchronous race crashes) -->
-    <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
     
     <script>
         const getFlagCode = (countryName) => {
@@ -27,27 +25,23 @@
             return codes[countryName.trim()] || '';
         };
 
-        // Highly robust date parsing helper supporting Excel serial numbers and Key dates
         const parseExcelOrStandardDate = (val) => {
             if (!val) return new Date(0);
             
-            // If it is an Excel serial date number
             let num = parseFloat(val);
             if (!isNaN(num) && num > 40000 && num < 60000) {
                 return new Date((num - 25569) * 86400 * 1000);
             }
             
-            // If it is a string containing an underscore (like Key)
             let str = String(val).trim();
             if (str.includes('_')) {
                 str = str.split('_')[0];
             }
             
-            // If it matches DD/MM/YYYY format
             const parts = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
             if (parts) {
                 const day = parseInt(parts[1], 10);
-                const month = parseInt(parts[2], 10) - 1; // 0-indexed in JS
+                const month = parseInt(parts[2], 10) - 1;
                 const year = parseInt(parts[3], 10);
                 return new Date(year, month, day);
             }
@@ -56,256 +50,243 @@
             return isNaN(parsed.getTime()) ? new Date(0) : parsed;
         };
 
-        // Complete Alpine Component Setup
-        const registerDashboardComponent = () => {
-            if (window.Alpine && !Alpine.components['dashboardData']) {
-                Alpine.data('dashboardData', () => ({
-                    loading: true,
-                    leaderboard: [],
-                    latestMatch: null,
-                    selectedUser: null,
-                    lastUpdated: 'Fetching...',
-                    fetchFailed: false,
-                    
-                    // Toggles
-                    showChart: false,
-                    showHeatmap: false,
-                    chartInstance: null,
-                    heatmapMatches: [],
-                    
-                    init() {
-                        // Let Alpine finish rendering the initial layout before we trigger the unstable fetch
-                        setTimeout(() => {
-                            try {
-                                // Check if we are running in a blob URL (Canvas preview) before even trying to fetch
-                                if (window.location.protocol === 'blob:' || window.location.protocol === 'data:' || window.location.protocol === 'file:') {
-                                    console.warn("Local/Preview mode detected. Bypassing fetch.");
-                                    this.loading = false;
-                                    this.lastUpdated = 'Preview Mode';
-                                    this.fetchFailed = true;
-                                    return;
-                                }
-
-                                // Fetch data and bypass browser cache
-                                fetch('data.csv?v=' + new Date().getTime())
-                                    .then(response => {
-                                        if (!response.ok) throw new Error("Could not find data.csv");
-                                        
-                                        // Get the exact time the file was updated on GitHub safely
-                                        const lastMod = response.headers.get('Last-Modified');
-                                        if (lastMod) {
-                                            const date = new Date(lastMod);
-                                            // iOS / Safari Date check to prevent Alpine.js silent crashes
-                                            if (!isNaN(date.getTime())) {
-                                                this.lastUpdated = date.toLocaleString([], {month: 'short', day: 'numeric', hour: '2-digit', minute:'2-digit'});
-                                            } else {
-                                                this.lastUpdated = 'Live Data';
-                                            }
-                                        } else {
-                                            this.lastUpdated = 'Live Data';
-                                        }
-                                        return response.text();
-                                    })
-                                    .then(csvText => {
-                                        Papa.parse(csvText, {
-                                            header: true,
-                                            dynamicTyping: true,
-                                            skipEmptyLines: true,
-                                            complete: (results) => {
-                                                this.processData(results.data);
-                                            }
-                                        });
-                                    })
-                                    .catch(error => {
-                                        console.error("Error loading CSV:", error);
-                                        this.loading = false;
-                                        this.lastUpdated = 'Update Failed';
-                                        this.fetchFailed = true;
-                                    });
-                            } catch (error) {
-                                console.error("Fetch crashed synchronously:", error);
+        // EXPOSED GLOBALLY SO ALPINE FINDS IT INSTANTLY
+        window.getDashboardData = function() {
+            return {
+                loading: true,
+                leaderboard: [],
+                latestMatch: null,
+                selectedUser: null,
+                lastUpdated: 'Fetching...',
+                fetchFailed: false,
+                
+                showChart: false,
+                showHeatmap: false,
+                chartInstance: null,
+                heatmapMatches: [],
+                
+                init() {
+                    setTimeout(() => {
+                        try {
+                            if (window.location.protocol === 'blob:' || window.location.protocol === 'data:' || window.location.protocol === 'file:') {
+                                console.warn("Local/Preview mode detected. Bypassing fetch.");
                                 this.loading = false;
                                 this.lastUpdated = 'Preview Mode';
                                 this.fetchFailed = true;
+                                return;
                             }
-                        }, 50); // Small 50ms delay lets Alpine mount the DOM safely first
-                    },
 
-                    handleLocalUpload(event) {
-                        const file = event.target.files[0];
-                        if (!file) return;
-                        this.loading = true;
-                        this.fetchFailed = false;
-                        this.lastUpdated = new Date(file.lastModified).toLocaleString();
-
-                        Papa.parse(file, {
-                            header: true,
-                            dynamicTyping: true,
-                            skipEmptyLines: true,
-                            complete: (results) => {
-                                this.processData(results.data);
-                            }
-                        });
-                    },
-
-                    processData(data) {
-                        try {
-                            const users = {};
-                            const finishedGames = new Map();
-
-                            data.forEach(row => {
-                                const name = row['Name'];
-                                if (!name) return;
-
-                                if (!users[name]) {
-                                    users[name] = { 
-                                        name: name, points: 0, exact_scores: 0, 
-                                        formArray: [], predictions: [], 
-                                        finalWinner: row['Final Winner'],
-                                        flagCode: getFlagCode(row['Final Winner']),
-                                        timeline: [0] 
-                                    };
-                                }
-
-                                const gamePoints = parseFloat(row['Game_Points']) || 0;
-                                const scorePoints = parseFloat(row['Score_Points']) || 0;
-                                
-                                users[name].points += gamePoints;
-                                if (scorePoints > 0) users[name].exact_scores += 1;
-
-                                const predHome = row['Score Home'];
-                                const predAway = row['Score Away'];
-
-                                const actualHome = row['Games_x002e_Score Home'] !== undefined ? row['Games_x002e_Score Home'] : row['Games.Score Home'];
-                                const actualAway = row['Games_x002e_Score Away'] !== undefined ? row['Games_x002e_Score Away'] : row['Games.Score Away'];
-                                const isFinished = actualHome !== null && actualHome !== undefined && actualHome !== '';
-
-                                if (isFinished) {
-                                    if (!finishedGames.has(row['Game'])) {
-                                        // Extract short names for the Heatmap (e.g. MEX v RSA)
-                                        const h = row['Home'] ? row['Home'].substring(0,3).toUpperCase() : '???';
-                                        const a = row['Away'] ? row['Away'].substring(0,3).toUpperCase() : '???';
-                                        
-                                        finishedGames.set(row['Game'], {
-                                            game: row['Game'], date: row['Date'],
-                                            score: `${actualHome} - ${actualAway}`, exact: [],
-                                            shortName: `${h} v ${a}`
-                                        });
-                                    }
+                            fetch('data.csv?v=' + new Date().getTime())
+                                .then(response => {
+                                    if (!response.ok) throw new Error("Could not find data.csv");
                                     
-                                    if (scorePoints > 0) finishedGames.get(row['Game']).exact.push(name.split(' ')[0]);
-
-                                    let formEmoji = '⬛';
-                                    if (scorePoints > 0) formEmoji = '🟩';
-                                    else if (gamePoints > 0) formEmoji = '🟨';
-                                    users[name].formArray.push(formEmoji);
-                                }
-
-                                users[name].predictions.push({
-                                    game: row['Game'], date: row['Date'],
-                                    pred: predHome !== null ? `${predHome} - ${predAway}` : '-',
-                                    actual: isFinished ? `${actualHome} - ${actualAway}` : 'Pending',
-                                    points: isFinished ? gamePoints : '-'
+                                    const lastMod = response.headers.get('Last-Modified');
+                                    if (lastMod) {
+                                        const date = new Date(lastMod);
+                                        if (!isNaN(date.getTime())) {
+                                            this.lastUpdated = date.toLocaleString([], {month: 'short', day: 'numeric', hour: '2-digit', minute:'2-digit'});
+                                        } else {
+                                            this.lastUpdated = 'Live Data';
+                                        }
+                                    } else {
+                                        this.lastUpdated = 'Live Data';
+                                    }
+                                    return response.text();
+                                })
+                                .then(csvText => {
+                                    Papa.parse(csvText, {
+                                        header: true,
+                                        dynamicTyping: true,
+                                        skipEmptyLines: true,
+                                        complete: (results) => {
+                                            this.processData(results.data);
+                                        }
+                                    });
+                                })
+                                .catch(error => {
+                                    console.error("Error loading CSV:", error);
+                                    this.loading = false;
+                                    this.lastUpdated = 'Update Failed';
+                                    this.fetchFailed = true;
                                 });
-                            });
-
-                            Object.values(users).forEach(u => { u.form = u.formArray.slice(-5).join(' '); });
-
-                            const finishedList = Array.from(finishedGames.values()).sort((a,b) => parseExcelOrStandardDate(a.date) - parseExcelOrStandardDate(b.date));
-                            if (finishedList.length > 0) this.latestMatch = finishedList[finishedList.length - 1];
-
-                            // Save matches for Heatmap rendering
-                            this.heatmapMatches = finishedList;
-
-                            // Generate Timeline Data
-                            finishedList.forEach(gameObj => {
-                                Object.values(users).forEach(u => {
-                                    const pred = u.predictions.find(p => p.game === gameObj.game);
-                                    const lastScore = u.timeline[u.timeline.length - 1];
-                                    u.timeline.push(lastScore + (pred && pred.points !== '-' ? pred.points : 0));
-                                });
-                            });
-
-                            this.leaderboard = Object.values(users).sort((a, b) => {
-                                if (b.points !== a.points) return b.points - a.points;
-                                return b.exact_scores - a.exact_scores;
-                            });
-
+                        } catch (error) {
+                            console.error("Fetch crashed synchronously:", error);
                             this.loading = false;
-                        } catch (err) {
-                            console.error("Error processing data layout:", err);
-                            this.loading = false;
+                            this.lastUpdated = 'Preview Mode';
                             this.fetchFailed = true;
                         }
-                    },
+                    }, 50);
+                },
 
-                    // HEATMAP HELPERS
-                    getHeatmapColor(user, gameName) {
-                        const pred = user.predictions.find(p => p.game === gameName);
-                        if (!pred || pred.points === '-') return 'bg-transparent border border-gray-700/60'; 
-                        if (pred.points >= 5) return 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]'; // Exact Match
-                        if (pred.points > 0) return 'bg-yellow-500 shadow-[0_0_5px_rgba(234,179,8,0.4)]'; // Correct Result
-                        return 'bg-gray-800'; // Wrong
-                    },
-                    getHeatmapTooltip(user, gameName) {
-                        const pred = user.predictions.find(p => p.game === gameName);
-                        if (!pred) return 'No prediction';
-                        return `Game: ${pred.game}\nActual Score: ${pred.actual}\n${user.name}'s Guess: ${pred.pred}\nPoints: ${pred.points}`;
-                    },
+                handleLocalUpload(event) {
+                    const file = event.target.files[0];
+                    if (!file) return;
+                    this.loading = true;
+                    this.fetchFailed = false;
+                    this.lastUpdated = new Date(file.lastModified).toLocaleString();
 
-                    toggleChart() {
-                        this.showChart = !this.showChart;
-                        if (this.showChart) {
-                            setTimeout(() => this.renderChart(), 100); 
+                    Papa.parse(file, {
+                        header: true,
+                        dynamicTyping: true,
+                        skipEmptyLines: true,
+                        complete: (results) => {
+                            this.processData(results.data);
                         }
-                    },
+                    });
+                },
 
-                    renderChart() {
-                        const ctx = document.getElementById('raceChart').getContext('2d');
-                        if (this.chartInstance) this.chartInstance.destroy();
+                processData(data) {
+                    try {
+                        const users = {};
+                        const finishedGames = new Map();
 
-                        const labels = Array.from({length: this.leaderboard[0].timeline.length}, (_, i) => i === 0 ? 'Start' : `M${i}`);
-                        const colors = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6'];
+                        data.forEach(row => {
+                            const name = row['Name'];
+                            if (!name) return;
 
-                        const top5 = this.leaderboard.slice(0, 5);
-
-                        const datasets = top5.map((u, i) => ({
-                            label: u.name,
-                            data: u.timeline,
-                            borderColor: colors[i],
-                            backgroundColor: 'transparent',
-                            borderWidth: 2, 
-                            tension: 0.3,
-                            pointRadius: 2, 
-                            pointHoverRadius: 5 
-                        }));
-
-                        Chart.defaults.color = '#94a3b8';
-                        this.chartInstance = new Chart(ctx, {
-                            type: 'line',
-                            data: { labels: labels, datasets: datasets },
-                            options: {
-                                responsive: true, maintainAspectRatio: false,
-                                interaction: { mode: 'index', intersect: false },
-                                plugins: {
-                                    legend: { position: 'top', labels: { boxWidth: 15, usePointStyle: true, font: {weight: 'bold'} } },
-                                    title: { display: true, text: 'Top 5 Title Race', color: '#fff', font: {size: 16} }
-                                },
-                                scales: {
-                                    y: { beginAtZero: true, grid: { color: '#334155' } },
-                                    x: { grid: { display: false } }
-                                }
+                            if (!users[name]) {
+                                users[name] = { 
+                                    name: name, points: 0, exact_scores: 0, 
+                                    formArray: [], predictions: [], 
+                                    finalWinner: row['Final Winner'],
+                                    flagCode: getFlagCode(row['Final Winner']),
+                                    timeline: [0] 
+                                };
                             }
-                        });
-                    }
-                }));
-            }
-        };
 
-        // Dual Safety Initialization Strategy
-        document.addEventListener('alpine:init', registerDashboardComponent);
-        window.addEventListener('DOMContentLoaded', registerDashboardComponent);
+                            const gamePoints = parseFloat(row['Game_Points']) || 0;
+                            const scorePoints = parseFloat(row['Score_Points']) || 0;
+                            
+                            users[name].points += gamePoints;
+                            if (scorePoints > 0) users[name].exact_scores += 1;
+
+                            const predHome = row['Score Home'];
+                            const predAway = row['Score Away'];
+
+                            const actualHome = row['Games_x002e_Score Home'] !== undefined ? row['Games_x002e_Score Home'] : row['Games.Score Home'];
+                            const actualAway = row['Games_x002e_Score Away'] !== undefined ? row['Games_x002e_Score Away'] : row['Games.Score Away'];
+                            const isFinished = actualHome !== null && actualHome !== undefined && actualHome !== '';
+
+                            if (isFinished) {
+                                if (!finishedGames.has(row['Game'])) {
+                                    const h = row['Home'] ? row['Home'].substring(0,3).toUpperCase() : '???';
+                                    const a = row['Away'] ? row['Away'].substring(0,3).toUpperCase() : '???';
+                                    
+                                    finishedGames.set(row['Game'], {
+                                        game: row['Game'], date: row['Date'],
+                                        score: `${actualHome} - ${actualAway}`, exact: [],
+                                        shortName: `${h} v ${a}`
+                                    });
+                                }
+                                
+                                if (scorePoints > 0) finishedGames.get(row['Game']).exact.push(name.split(' ')[0]);
+
+                                let formEmoji = '⬛';
+                                if (scorePoints > 0) formEmoji = '🟩';
+                                else if (gamePoints > 0) formEmoji = '🟨';
+                                users[name].formArray.push(formEmoji);
+                            }
+
+                            users[name].predictions.push({
+                                game: row['Game'], date: row['Date'],
+                                pred: predHome !== null ? `${predHome} - ${predAway}` : '-',
+                                actual: isFinished ? `${actualHome} - ${actualAway}` : 'Pending',
+                                points: isFinished ? gamePoints : '-'
+                            });
+                        });
+
+                        Object.values(users).forEach(u => { u.form = u.formArray.slice(-5).join(' '); });
+
+                        const finishedList = Array.from(finishedGames.values()).sort((a,b) => parseExcelOrStandardDate(a.date) - parseExcelOrStandardDate(b.date));
+                        if (finishedList.length > 0) this.latestMatch = finishedList[finishedList.length - 1];
+
+                        this.heatmapMatches = finishedList;
+
+                        finishedList.forEach(gameObj => {
+                            Object.values(users).forEach(u => {
+                                const pred = u.predictions.find(p => p.game === gameObj.game);
+                                const lastScore = u.timeline[u.timeline.length - 1];
+                                u.timeline.push(lastScore + (pred && pred.points !== '-' ? pred.points : 0));
+                            });
+                        });
+
+                        this.leaderboard = Object.values(users).sort((a, b) => {
+                            if (b.points !== a.points) return b.points - a.points;
+                            return b.exact_scores - a.exact_scores;
+                        });
+
+                        this.loading = false;
+                    } catch (err) {
+                        console.error("Error processing data layout:", err);
+                        this.loading = false;
+                        this.fetchFailed = true;
+                    }
+                },
+
+                getHeatmapColor(user, gameName) {
+                    const pred = user.predictions.find(p => p.game === gameName);
+                    if (!pred || pred.points === '-') return 'bg-transparent border border-gray-700/60'; 
+                    if (pred.points >= 5) return 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]';
+                    if (pred.points > 0) return 'bg-yellow-500 shadow-[0_0_5px_rgba(234,179,8,0.4)]';
+                    return 'bg-gray-800';
+                },
+                getHeatmapTooltip(user, gameName) {
+                    const pred = user.predictions.find(p => p.game === gameName);
+                    if (!pred) return 'No prediction';
+                    return `Game: ${pred.game}\nActual Score: ${pred.actual}\n${user.name}'s Guess: ${pred.pred}\nPoints: ${pred.points}`;
+                },
+
+                toggleChart() {
+                    this.showChart = !this.showChart;
+                    if (this.showChart) {
+                        setTimeout(() => this.renderChart(), 100); 
+                    }
+                },
+
+                renderChart() {
+                    const ctx = document.getElementById('raceChart').getContext('2d');
+                    if (this.chartInstance) this.chartInstance.destroy();
+
+                    const labels = Array.from({length: this.leaderboard[0].timeline.length}, (_, i) => i === 0 ? 'Start' : `M${i}`);
+                    const colors = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6'];
+
+                    const top5 = this.leaderboard.slice(0, 5);
+
+                    const datasets = top5.map((u, i) => ({
+                        label: u.name,
+                        data: u.timeline,
+                        borderColor: colors[i],
+                        backgroundColor: 'transparent',
+                        borderWidth: 2, 
+                        tension: 0.3,
+                        pointRadius: 2, 
+                        pointHoverRadius: 5 
+                    }));
+
+                    Chart.defaults.color = '#94a3b8';
+                    this.chartInstance = new Chart(ctx, {
+                        type: 'line',
+                        data: { labels: labels, datasets: datasets },
+                        options: {
+                            responsive: true, maintainAspectRatio: false,
+                            interaction: { mode: 'index', intersect: false },
+                            plugins: {
+                                legend: { position: 'top', labels: { boxWidth: 15, usePointStyle: true, font: {weight: 'bold'} } },
+                                title: { display: true, text: 'Top 5 Title Race', color: '#fff', font: {size: 16} }
+                            },
+                            scales: {
+                                y: { beginAtZero: true, grid: { color: '#334155' } },
+                                x: { grid: { display: false } }
+                            }
+                        }
+                    });
+                }
+            };
+        };
     </script>
+    
+    <!-- Alpine.js Core (Must load AFTER the global window function is defined) -->
+    <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
     
     <script>
         tailwind.config = { darkMode: 'class', theme: { extend: { colors: { darkbg: '#0f172a', card: '#1e293b', accent: '#10b981' } } } }
@@ -315,7 +296,6 @@
         body { background-color: #0f172a; color: #f8fafc; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; -webkit-font-smoothing: antialiased; }
         .glass-card { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(10px); border: 1px solid rgba(255, 255, 255, 0.1); }
         
-        /* Fixed rotation model to guarantee clean iOS rendering */
         .vertical-text-container {
             height: 110px;
             display: flex;
@@ -330,13 +310,12 @@
             font-size: 10px;
         }
 
-        /* Heatmap specific scrollbar styling */
         .heatmap-scroll::-webkit-scrollbar { height: 8px; }
         .heatmap-scroll::-webkit-scrollbar-track { background: #1e293b; border-radius: 4px; }
         .heatmap-scroll::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
     </style>
 </head>
-<body class="min-h-screen p-4 md:p-8" x-data="dashboardData">
+<body class="min-h-screen p-4 md:p-8" x-data="getDashboardData()">
     
     <div class="max-w-7xl mx-auto max-w-full overflow-hidden">
         <header class="mb-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
@@ -352,13 +331,11 @@
             </div>
 
             <div class="flex gap-4 items-center flex-wrap mt-2 md:mt-0">
-                <!-- Heatmap Toggle with NEW Badge -->
                 <button x-show="leaderboard.length > 0" @click="showHeatmap = !showHeatmap" class="relative bg-orange-600 hover:bg-orange-500 text-white text-sm font-bold py-2 px-4 rounded-lg shadow-lg transition-all duration-150 flex items-center gap-2">
                     🔥 <span x-text="showHeatmap ? 'Hide Heatmap' : 'View Heatmap'"></span>
                     <span class="absolute -top-2 -right-2 bg-red-500 text-white text-[10px] px-1.5 py-0.5 rounded-full font-black animate-pulse shadow-md border border-red-400">NEW</span>
                 </button>
 
-                <!-- Chart Toggle with NEW Badge -->
                 <button x-show="leaderboard.length > 0" @click="toggleChart()" class="relative bg-blue-600 hover:bg-blue-500 text-white text-sm font-bold py-2 px-4 rounded-lg shadow-lg transition-all duration-150 flex items-center gap-2">
                     📈 <span x-text="showChart ? 'Hide Race' : 'Top 5 Race'"></span>
                     <span class="absolute -top-2 -right-2 bg-red-500 text-white text-[10px] px-1.5 py-0.5 rounded-full font-black animate-pulse shadow-md border border-red-400">NEW</span>
@@ -366,12 +343,10 @@
             </div>
         </header>
 
-        <!-- Loading spinner -->
         <div x-show="loading" class="text-center text-gray-400 py-20">
             <p class="text-xl animate-pulse">Loading latest scores...</p>
         </div>
 
-        <!-- Safe Fallback for Local/Preview environments - REMOVED x-cloak -->
         <div x-show="fetchFailed" style="display: none;" class="text-center py-12 border-2 border-dashed border-red-900/50 rounded-xl mb-8 bg-red-950/20 mx-auto max-w-2xl shadow-xl px-4">
             <h2 class="text-xl text-red-400 mb-2 font-bold">⚠️ Local Preview Mode Detected</h2>
             <p class="text-gray-400 mb-6 text-xs leading-relaxed">Could not locate 'data.csv' automatically. This happens because the browser's security blocks fetching local files directly, which is completely expected when previewing or testing. To test the dashboard, please load your file manually:</p>
@@ -383,7 +358,6 @@
 
         <div x-cloak x-show="!loading && leaderboard.length > 0">
             
-            <!-- PREDICTION HEATMAP -->
             <div x-show="showHeatmap" x-collapse class="mb-8">
                 <div class="glass-card p-6 rounded-xl border border-gray-700 shadow-2xl relative overflow-hidden">
                     <h3 class="text-xl font-bold text-white mb-4 flex items-center gap-2">🔥 Prediction Heatmap</h3>
@@ -392,10 +366,8 @@
                         <table class="text-xs border-separate" style="border-spacing: 3px;">
                             <thead>
                                 <tr>
-                                    <!-- Sticky Header Column (Explicit solid backgrounds for iOS Safari render overlaps) -->
                                     <th class="p-2 text-left sticky left-0 z-10 w-32 min-w-[128px] border-b border-gray-700 bg-[#1e293b]">Colleague</th>
                                     
-                                    <!-- Match Columns -->
                                     <template x-for="match in heatmapMatches" :key="match.game">
                                         <th class="p-1 pb-2 border-b border-gray-700 align-bottom w-9 min-w-[36px]">
                                             <div class="vertical-text-container">
@@ -408,10 +380,8 @@
                             <tbody>
                                 <template x-for="user in leaderboard" :key="user.name">
                                     <tr class="hover:bg-gray-800/40 transition">
-                                        <!-- Sticky User Column -->
                                         <td class="p-2 text-left font-bold text-white sticky left-0 z-10 whitespace-nowrap border-r border-gray-700 bg-[#1d283a]" x-text="user.name"></td>
                                         
-                                        <!-- Colored Squares -->
                                         <template x-for="match in heatmapMatches" :key="match.game">
                                             <td class="w-9 h-9 rounded-sm cursor-pointer border border-black/20"
                                                 :class="getHeatmapColor(user, match.game)"
@@ -424,7 +394,6 @@
                         </table>
                     </div>
 
-                    <!-- Legend -->
                     <div class="mt-4 flex gap-6 text-xs text-gray-400 justify-center flex-wrap">
                         <span class="flex items-center gap-2"><div class="w-4 h-4 bg-green-500 rounded-sm shadow-[0_0_8px_rgba(34,197,94,0.6)]"></div> Exact Score</span>
                         <span class="flex items-center gap-2"><div class="w-4 h-4 bg-yellow-500 rounded-sm shadow-[0_0_5px_rgba(234,179,8,0.4)]"></div> Correct Result</span>
@@ -433,7 +402,6 @@
                 </div>
             </div>
 
-            <!-- RACE CHART (Relative wrapper height explicitly mapped for iOS Safari rendering safety) -->
             <div x-show="showChart" x-collapse class="mb-8">
                 <div class="glass-card p-6 rounded-xl border border-gray-700 shadow-2xl">
                     <div class="relative w-full h-[400px]">
@@ -442,7 +410,6 @@
                 </div>
             </div>
 
-            <!-- LATEST MATCH -->
             <div x-show="latestMatch" class="mb-8 bg-gradient-to-r from-blue-900/50 to-indigo-900/50 border border-blue-500/30 rounded-xl p-4 shadow-lg flex flex-col md:flex-row items-center justify-between">
                 <div class="flex items-center gap-4 mb-3 md:mb-0">
                     <div class="bg-blue-500/20 p-3 rounded-full text-2xl">⚽</div>
@@ -457,7 +424,6 @@
                 </div>
             </div>
 
-            <!-- LEADERBOARD -->
             <div class="glass-card rounded-xl shadow-xl overflow-hidden border border-gray-700">
                 <div class="overflow-x-auto">
                     <table class="w-full text-left border-collapse">
