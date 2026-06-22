@@ -8,9 +8,6 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.2/papaparse.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     
-    <!-- Alpine.js Plugins (Must have defer) -->
-    <script src="https://cdn.jsdelivr.net/npm/@alpinejs/collapse@3.x.x/dist/cdn.min.js"></script>
-    
     <script>
         const getFlagCode = (countryName) => {
             if (!countryName) return '';
@@ -285,9 +282,6 @@
         };
     </script>
     
-    <!-- Alpine.js Core (Must load AFTER the global window function is defined) -->
-    <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
-    
     <script>
         tailwind.config = { darkMode: 'class', theme: { extend: { colors: { darkbg: '#0f172a', card: '#1e293b', accent: '#10b981' } } } }
     </script>
@@ -296,20 +290,31 @@
         body { background-color: #0f172a; color: #f8fafc; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; -webkit-font-smoothing: antialiased; }
         .glass-card { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(10px); border: 1px solid rgba(255, 255, 255, 0.1); }
         
+        /* Bulletproof iOS rotation using absolute positioning instead of buggy writing-mode */
         .vertical-text-container {
             height: 110px;
-            display: flex;
-            align-items: center;
-            justify-content: flex-end;
-            padding-bottom: 8px;
+            width: 30px;
+            margin: 0 auto;
+            position: relative;
+            display: block;
         }
         .vertical-text {
-            writing-mode: vertical-rl;
-            transform: rotate(180deg);
+            position: absolute;
+            bottom: 10px;
+            left: 15px; /* centers the rotation point */
+            transform-origin: bottom left;
+            transform: rotate(-90deg);
             white-space: nowrap;
-            font-size: 10px;
+            font-size: 11px;
+            font-family: monospace;
+            letter-spacing: 0.1em;
+            color: #94a3b8;
         }
 
+        /* Native smooth scrolling for iOS */
+        .heatmap-scroll, .leaderboard-scroll { 
+            -webkit-overflow-scrolling: touch; 
+        }
         .heatmap-scroll::-webkit-scrollbar { height: 8px; }
         .heatmap-scroll::-webkit-scrollbar-track { background: #1e293b; border-radius: 4px; }
         .heatmap-scroll::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
@@ -317,7 +322,8 @@
 </head>
 <body class="min-h-screen p-4 md:p-8" x-data="getDashboardData()">
     
-    <div class="max-w-7xl mx-auto max-w-full overflow-hidden">
+    <!-- REMOVED overflow-hidden FROM HERE to prevent massive iOS Safari layout clipping bugs -->
+    <div class="max-w-7xl mx-auto w-full">
         <header class="mb-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
             <div>
                 <h1 class="text-4xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-accent to-blue-500 mb-1">
@@ -359,7 +365,8 @@
         <div x-cloak x-show="!loading && leaderboard.length > 0">
             
             <div x-show="showHeatmap" x-collapse class="mb-8">
-                <div class="glass-card p-6 rounded-xl border border-gray-700 shadow-2xl relative overflow-hidden">
+                <!-- Removed overflow-hidden from glass-card -->
+                <div class="glass-card p-6 rounded-xl border border-gray-700 shadow-2xl relative">
                     <h3 class="text-xl font-bold text-white mb-4 flex items-center gap-2">🔥 Prediction Heatmap</h3>
                     
                     <div class="overflow-x-auto heatmap-scroll pb-4">
@@ -424,16 +431,17 @@
                 </div>
             </div>
 
-            <div class="glass-card rounded-xl shadow-xl overflow-hidden border border-gray-700">
-                <div class="overflow-x-auto">
+            <div class="glass-card rounded-xl shadow-xl border border-gray-700">
+                <!-- Added leaderboard-scroll for iOS touch tracking -->
+                <div class="overflow-x-auto leaderboard-scroll rounded-xl">
                     <table class="w-full text-left border-collapse">
                         <thead>
                             <tr class="bg-gray-800 text-gray-300 text-sm uppercase tracking-wider">
-                                <th class="p-4 font-semibold text-center w-20">Rank</th>
-                                <th class="p-4 font-semibold">Colleague</th>
-                                <th class="p-4 font-semibold text-center hidden md:table-cell" title="Recent Streak (Last 5 Games)">Form Guide</th>
-                                <th class="p-4 font-semibold text-center hidden sm:table-cell" title="Number of exact score predictions">Exacts</th>
-                                <th class="p-4 font-semibold text-center text-accent">Points</th>
+                                <th class="p-4 font-semibold text-center w-20 whitespace-nowrap">Rank</th>
+                                <th class="p-4 font-semibold whitespace-nowrap">Colleague</th>
+                                <th class="p-4 font-semibold text-center hidden md:table-cell whitespace-nowrap" title="Recent Streak (Last 5 Games)">Form Guide</th>
+                                <th class="p-4 font-semibold text-center hidden sm:table-cell whitespace-nowrap" title="Number of exact score predictions">Exacts</th>
+                                <th class="p-4 font-semibold text-center text-accent whitespace-nowrap">Points</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -448,13 +456,13 @@
                                     
                                     <td class="p-4 font-bold text-white flex items-center gap-3">
                                         <div class="w-8 h-8 rounded-full bg-gradient-to-br from-gray-700 to-gray-600 flex items-center justify-center text-xs shadow-inner shrink-0" x-text="user.name.substring(0,2).toUpperCase()"></div>
-                                        <span x-text="user.name" :class="{'text-lg': index < 3}"></span>
+                                        <span class="whitespace-nowrap" x-text="user.name" :class="{'text-lg': index < 3}"></span>
                                         <template x-if="user.flagCode">
-                                            <img :src="'https://flagcdn.com/w40/' + user.flagCode + '.png'" class="w-6 h-auto ml-2 shadow-sm rounded-sm" :title="'Supporter: ' + user.finalWinner" :alt="user.finalWinner">
+                                            <img :src="'https://flagcdn.com/w40/' + user.flagCode + '.png'" class="w-6 h-auto ml-2 shadow-sm rounded-sm shrink-0" :title="'Supporter: ' + user.finalWinner" :alt="user.finalWinner">
                                         </template>
                                     </td>
                                     
-                                    <td class="p-4 text-center hidden md:table-cell tracking-widest text-sm" x-text="user.form"></td>
+                                    <td class="p-4 text-center hidden md:table-cell tracking-widest text-sm whitespace-nowrap" x-text="user.form"></td>
                                     <td class="p-4 text-center font-mono text-gray-400 hidden sm:table-cell" x-text="user.exact_scores"></td>
                                     <td class="p-4 text-center font-bold text-accent" :class="index < 3 ? 'text-2xl' : 'text-xl'" x-text="user.points"></td>
                                 </tr>
@@ -472,15 +480,15 @@
             <template x-if="selectedUser">
                 <div class="flex flex-col overflow-hidden max-h-[85vh]">
                     <div class="p-6 border-b border-gray-700 flex justify-between items-center bg-gray-800 shrink-0">
-                        <h2 class="text-2xl font-bold text-white flex items-center">
+                        <h2 class="text-2xl font-bold text-white flex items-center flex-wrap gap-2">
                             <span x-text="selectedUser.name + '\'s Guesses'"></span>
                             <template x-if="selectedUser.flagCode">
-                                <img :src="'https://flagcdn.com/w40/' + selectedUser.flagCode + '.png'" class="w-8 h-auto ml-3 shadow-sm rounded-sm">
+                                <img :src="'https://flagcdn.com/w40/' + selectedUser.flagCode + '.png'" class="w-8 h-auto shadow-sm rounded-sm">
                             </template>
                         </h2>
-                        <button @click="selectedUser = null" class="text-gray-400 hover:text-white text-3xl font-bold leading-none">&times;</button>
+                        <button @click="selectedUser = null" class="text-gray-400 hover:text-white text-4xl font-bold leading-none">&times;</button>
                     </div>
-                    <div class="p-6 overflow-y-auto flex-1 min-h-0">
+                    <div class="p-6 overflow-y-auto flex-1 min-h-0 leaderboard-scroll">
                         <table class="w-full text-sm">
                             <thead>
                                 <tr class="text-gray-400 border-b border-gray-700">
@@ -508,5 +516,9 @@
             </template>
         </div>
     </div>
+    
+    <!-- Alpine.js Dependencies moved to END OF BODY to guarantee DOM parsing before execution -->
+    <script src="https://cdn.jsdelivr.net/npm/@alpinejs/collapse@3.x.x/dist/cdn.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 </body>
 </html>
