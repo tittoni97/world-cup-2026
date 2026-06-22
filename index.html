@@ -74,49 +74,61 @@
                     heatmapMatches: [],
                     
                     init() {
-                        try {
-                            // Fetch data and bypass browser cache
-                            fetch('data.csv?v=' + new Date().getTime())
-                                .then(response => {
-                                    if (!response.ok) throw new Error("Could not find data.csv");
-                                    
-                                    // Get the exact time the file was updated on GitHub safely
-                                    const lastMod = response.headers.get('Last-Modified');
-                                    if (lastMod) {
-                                        const date = new Date(lastMod);
-                                        // iOS / Safari Date check to prevent Alpine.js silent crashes
-                                        if (!isNaN(date.getTime())) {
-                                            this.lastUpdated = date.toLocaleString([], {month: 'short', day: 'numeric', hour: '2-digit', minute:'2-digit'});
+                        // Let Alpine finish rendering the initial layout before we trigger the unstable fetch
+                        setTimeout(() => {
+                            try {
+                                // Check if we are running in a blob URL (Canvas preview) before even trying to fetch
+                                if (window.location.protocol === 'blob:' || window.location.protocol === 'data:' || window.location.protocol === 'file:') {
+                                    console.warn("Local/Preview mode detected. Bypassing fetch.");
+                                    this.loading = false;
+                                    this.lastUpdated = 'Preview Mode';
+                                    this.fetchFailed = true;
+                                    return;
+                                }
+
+                                // Fetch data and bypass browser cache
+                                fetch('data.csv?v=' + new Date().getTime())
+                                    .then(response => {
+                                        if (!response.ok) throw new Error("Could not find data.csv");
+                                        
+                                        // Get the exact time the file was updated on GitHub safely
+                                        const lastMod = response.headers.get('Last-Modified');
+                                        if (lastMod) {
+                                            const date = new Date(lastMod);
+                                            // iOS / Safari Date check to prevent Alpine.js silent crashes
+                                            if (!isNaN(date.getTime())) {
+                                                this.lastUpdated = date.toLocaleString([], {month: 'short', day: 'numeric', hour: '2-digit', minute:'2-digit'});
+                                            } else {
+                                                this.lastUpdated = 'Live Data';
+                                            }
                                         } else {
                                             this.lastUpdated = 'Live Data';
                                         }
-                                    } else {
-                                        this.lastUpdated = 'Live Data';
-                                    }
-                                    return response.text();
-                                })
-                                .then(csvText => {
-                                    Papa.parse(csvText, {
-                                        header: true,
-                                        dynamicTyping: true,
-                                        skipEmptyLines: true,
-                                        complete: (results) => {
-                                            this.processData(results.data);
-                                        }
+                                        return response.text();
+                                    })
+                                    .then(csvText => {
+                                        Papa.parse(csvText, {
+                                            header: true,
+                                            dynamicTyping: true,
+                                            skipEmptyLines: true,
+                                            complete: (results) => {
+                                                this.processData(results.data);
+                                            }
+                                        });
+                                    })
+                                    .catch(error => {
+                                        console.error("Error loading CSV:", error);
+                                        this.loading = false;
+                                        this.lastUpdated = 'Update Failed';
+                                        this.fetchFailed = true;
                                     });
-                                })
-                                .catch(error => {
-                                    console.error("Error loading CSV:", error);
-                                    this.loading = false;
-                                    this.lastUpdated = 'Update Failed';
-                                    this.fetchFailed = true;
-                                });
-                        } catch (error) {
-                            console.error("Fetch crashed synchronously (expected on local preview):", error);
-                            this.loading = false;
-                            this.lastUpdated = 'Preview Mode';
-                            this.fetchFailed = true;
-                        }
+                            } catch (error) {
+                                console.error("Fetch crashed synchronously:", error);
+                                this.loading = false;
+                                this.lastUpdated = 'Preview Mode';
+                                this.fetchFailed = true;
+                            }
+                        }, 50); // Small 50ms delay lets Alpine mount the DOM safely first
                     },
 
                     handleLocalUpload(event) {
@@ -359,10 +371,10 @@
             <p class="text-xl animate-pulse">Loading latest scores...</p>
         </div>
 
-        <!-- Safe Fallback for Local/Preview environments -->
-        <div x-cloak x-show="fetchFailed" class="text-center py-12 border-2 border-dashed border-red-900/50 rounded-xl mb-8 bg-red-950/20 mx-auto max-w-2xl shadow-xl px-4">
-            <h2 class="text-xl text-red-400 mb-2 font-bold">⚠️ Connection Issue</h2>
-            <p class="text-gray-400 mb-6 text-xs leading-relaxed">Could not locate 'data.csv' automatically. This is expected if you are running in a restricted sandbox or preview mode. To test, please upload your file manually:</p>
+        <!-- Safe Fallback for Local/Preview environments - REMOVED x-cloak -->
+        <div x-show="fetchFailed" style="display: none;" class="text-center py-12 border-2 border-dashed border-red-900/50 rounded-xl mb-8 bg-red-950/20 mx-auto max-w-2xl shadow-xl px-4">
+            <h2 class="text-xl text-red-400 mb-2 font-bold">⚠️ Local Preview Mode Detected</h2>
+            <p class="text-gray-400 mb-6 text-xs leading-relaxed">Could not locate 'data.csv' automatically. This happens because the browser's security blocks fetching local files directly, which is completely expected when previewing or testing. To test the dashboard, please load your file manually:</p>
             <label class="cursor-pointer bg-gray-700 hover:bg-gray-600 text-white text-sm font-bold py-3 px-6 rounded-lg shadow-lg transition border border-gray-500 inline-block">
                 <span>📂 Upload data.csv</span>
                 <input type="file" accept=".csv" class="hidden" @change="handleLocalUpload">
@@ -463,4 +475,72 @@
                                 <tr class="transition cursor-pointer border-b border-gray-800 hover:bg-gray-700/50" @click="selectedUser = user">
                                     <td class="p-4 text-center font-bold">
                                         <span x-show="index === 0" class="text-3xl drop-shadow-md" title="1st Place">🥇</span>
-                                        <span x-show="index === 1" class="text-3xl drop-shadow-md
+                                        <span x-show="index === 1" class="text-3xl drop-shadow-md" title="2nd Place">🥈</span>
+                                        <span x-show="index === 2" class="text-3xl drop-shadow-md" title="3rd Place">🥉</span>
+                                        <span x-show="index > 2" class="text-gray-400" x-text="index + 1"></span>
+                                    </td>
+                                    
+                                    <td class="p-4 font-bold text-white flex items-center gap-3">
+                                        <div class="w-8 h-8 rounded-full bg-gradient-to-br from-gray-700 to-gray-600 flex items-center justify-center text-xs shadow-inner shrink-0" x-text="user.name.substring(0,2).toUpperCase()"></div>
+                                        <span x-text="user.name" :class="{'text-lg': index < 3}"></span>
+                                        <template x-if="user.flagCode">
+                                            <img :src="'https://flagcdn.com/w40/' + user.flagCode + '.png'" class="w-6 h-auto ml-2 shadow-sm rounded-sm" :title="'Supporter: ' + user.finalWinner" :alt="user.finalWinner">
+                                        </template>
+                                    </td>
+                                    
+                                    <td class="p-4 text-center hidden md:table-cell tracking-widest text-sm" x-text="user.form"></td>
+                                    <td class="p-4 text-center font-mono text-gray-400 hidden sm:table-cell" x-text="user.exact_scores"></td>
+                                    <td class="p-4 text-center font-bold text-accent" :class="index < 3 ? 'text-2xl' : 'text-xl'" x-text="user.points"></td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- USER MODAL -->
+    <div x-cloak x-show="selectedUser" class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4" @click.self="selectedUser = null">
+        <div class="bg-card w-full max-w-3xl rounded-2xl shadow-2xl border border-gray-700 overflow-hidden flex flex-col max-h-[85vh]">
+            <template x-if="selectedUser">
+                <div class="flex flex-col overflow-hidden max-h-[85vh]">
+                    <div class="p-6 border-b border-gray-700 flex justify-between items-center bg-gray-800 shrink-0">
+                        <h2 class="text-2xl font-bold text-white flex items-center">
+                            <span x-text="selectedUser.name + '\'s Guesses'"></span>
+                            <template x-if="selectedUser.flagCode">
+                                <img :src="'https://flagcdn.com/w40/' + selectedUser.flagCode + '.png'" class="w-8 h-auto ml-3 shadow-sm rounded-sm">
+                            </template>
+                        </h2>
+                        <button @click="selectedUser = null" class="text-gray-400 hover:text-white text-3xl font-bold leading-none">&times;</button>
+                    </div>
+                    <div class="p-6 overflow-y-auto flex-1 min-h-0">
+                        <table class="w-full text-sm">
+                            <thead>
+                                <tr class="text-gray-400 border-b border-gray-700">
+                                    <th class="pb-2 text-left">Match</th>
+                                    <th class="pb-2 text-center">Prediction</th>
+                                    <th class="pb-2 text-center">Actual Result</th>
+                                    <th class="pb-2 text-center text-accent">Points</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <template x-for="pred in selectedUser.predictions">
+                                    <tr class="border-b border-gray-800/50 hover:bg-gray-800/30 transition">
+                                        <td class="py-3 text-gray-200 font-medium" x-text="pred.game"></td>
+                                        <td class="py-3 text-center font-mono bg-gray-800/30 rounded" x-text="pred.pred"></td>
+                                        <td class="py-3 text-center font-mono text-gray-400" x-text="pred.actual"></td>
+                                        <td class="py-3 text-center font-bold" 
+                                            :class="pred.points > 3 ? 'text-accent' : (pred.points > 0 ? 'text-yellow-400' : 'text-gray-600')" 
+                                            x-text="pred.points > 0 ? '+' + pred.points : '0'"></td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </template>
+        </div>
+    </div>
+</body>
+</html>
