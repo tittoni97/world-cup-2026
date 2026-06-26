@@ -35,7 +35,7 @@
                 str = str.split('_')[0];
             }
             
-            const parts = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+            const parts = str.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})/);
             if (parts) {
                 const day = parseInt(parts[1], 10);
                 const month = parseInt(parts[2], 10) - 1;
