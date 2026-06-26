@@ -8,6 +8,9 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.2/papaparse.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     
+    <!-- Alpine.js Plugins (Must have defer) -->
+    <script src="https://cdn.jsdelivr.net/npm/@alpinejs/collapse@3.x.x/dist/cdn.min.js"></script>
+    
     <script>
         const getFlagCode = (countryName) => {
             if (!countryName) return '';
@@ -35,6 +38,7 @@
                 str = str.split('_')[0];
             }
             
+            // Includes periods (.) to seamlessly match the new '11.06.2026' CSV format
             const parts = str.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})/);
             if (parts) {
                 const day = parseInt(parts[1], 10);
@@ -143,7 +147,12 @@
 
                             if (!users[name]) {
                                 users[name] = { 
-                                    name: name, points: 0, exact_scores: 0, 
+                                    name: name, 
+                                    points: 0, 
+                                    exact_scores: 0, 
+                                    correct_results: 0, 
+                                    result_points: 0, 
+                                    exact_points: 0,
                                     formArray: [], predictions: [], 
                                     finalWinner: row['Final Winner'],
                                     flagCode: getFlagCode(row['Final Winner']),
@@ -153,9 +162,14 @@
 
                             const gamePoints = parseFloat(row['Game_Points']) || 0;
                             const scorePoints = parseFloat(row['Score_Points']) || 0;
+                            const resultPoints = parseFloat(row['Result_Points']) || 0;
                             
                             users[name].points += gamePoints;
+                            users[name].exact_points += scorePoints;
+                            users[name].result_points += resultPoints;
+
                             if (scorePoints > 0) users[name].exact_scores += 1;
+                            if (gamePoints > 0) users[name].correct_results += 1;
 
                             const predHome = row['Score Home'];
                             const predAway = row['Score Away'];
@@ -282,6 +296,9 @@
         };
     </script>
     
+    <!-- Alpine.js Core (Must load AFTER the global window function is defined) -->
+    <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    
     <script>
         tailwind.config = { darkMode: 'class', theme: { extend: { colors: { darkbg: '#0f172a', card: '#1e293b', accent: '#10b981' } } } }
     </script>
@@ -322,7 +339,6 @@
 </head>
 <body class="min-h-screen p-4 md:p-8" x-data="getDashboardData()">
     
-    <!-- REMOVED overflow-hidden FROM HERE to prevent massive iOS Safari layout clipping bugs -->
     <div class="max-w-7xl mx-auto w-full">
         <header class="mb-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
             <div>
@@ -336,15 +352,13 @@
                 </p>
             </div>
 
-            <div class="flex gap-4 items-center flex-wrap mt-2 md:mt-0">
-                <button x-show="leaderboard.length > 0" @click="showHeatmap = !showHeatmap" class="relative bg-orange-600 hover:bg-orange-500 text-white text-sm font-bold py-2 px-4 rounded-lg shadow-lg transition-all duration-150 flex items-center gap-2">
+            <div class="flex gap-4 items-center flex-wrap mt-2 md:mt-0" x-cloak x-show="leaderboard.length > 0">
+                <button @click="showHeatmap = !showHeatmap" class="bg-orange-600 hover:bg-orange-500 text-white text-sm font-bold py-2 px-4 rounded-lg shadow-lg transition-all duration-150 flex items-center gap-2">
                     🔥 <span x-text="showHeatmap ? 'Hide Heatmap' : 'View Heatmap'"></span>
-                    <span class="absolute -top-2 -right-2 bg-red-500 text-white text-[10px] px-1.5 py-0.5 rounded-full font-black animate-pulse shadow-md border border-red-400">NEW</span>
                 </button>
 
-                <button x-show="leaderboard.length > 0" @click="toggleChart()" class="relative bg-blue-600 hover:bg-blue-500 text-white text-sm font-bold py-2 px-4 rounded-lg shadow-lg transition-all duration-150 flex items-center gap-2">
+                <button @click="toggleChart()" class="bg-blue-600 hover:bg-blue-500 text-white text-sm font-bold py-2 px-4 rounded-lg shadow-lg transition-all duration-150 flex items-center gap-2">
                     📈 <span x-text="showChart ? 'Hide Race' : 'Top 5 Race'"></span>
-                    <span class="absolute -top-2 -right-2 bg-red-500 text-white text-[10px] px-1.5 py-0.5 rounded-full font-black animate-pulse shadow-md border border-red-400">NEW</span>
                 </button>
             </div>
         </header>
@@ -365,8 +379,7 @@
         <div x-cloak x-show="!loading && leaderboard.length > 0">
             
             <div x-show="showHeatmap" x-collapse class="mb-8">
-                <!-- Removed overflow-hidden from glass-card -->
-                <div class="glass-card p-6 rounded-xl border border-gray-700 shadow-2xl relative">
+                <div class="glass-card p-6 rounded-xl border border-gray-700 shadow-2xl relative overflow-hidden">
                     <h3 class="text-xl font-bold text-white mb-4 flex items-center gap-2">🔥 Prediction Heatmap</h3>
                     
                     <div class="overflow-x-auto heatmap-scroll pb-4">
@@ -432,7 +445,6 @@
             </div>
 
             <div class="glass-card rounded-xl shadow-xl border border-gray-700">
-                <!-- Added leaderboard-scroll for iOS touch tracking -->
                 <div class="overflow-x-auto leaderboard-scroll rounded-xl">
                     <table class="w-full text-left border-collapse">
                         <thead>
@@ -440,8 +452,9 @@
                                 <th class="p-4 font-semibold text-center w-20 whitespace-nowrap">Rank</th>
                                 <th class="p-4 font-semibold whitespace-nowrap">Colleague</th>
                                 <th class="p-4 font-semibold text-center hidden md:table-cell whitespace-nowrap" title="Recent Streak (Last 5 Games)">Form Guide</th>
-                                <th class="p-4 font-semibold text-center hidden sm:table-cell whitespace-nowrap" title="Number of exact score predictions">Exacts</th>
-                                <th class="p-4 font-semibold text-center text-accent whitespace-nowrap">Points</th>
+                                <th class="p-4 font-semibold text-center hidden sm:table-cell whitespace-nowrap" title="Number of correct results (Win/Draw/Loss)">Results <span class="text-[10px] text-gray-500 font-normal block">Count (Pts)</span></th>
+                                <th class="p-4 font-semibold text-center hidden sm:table-cell whitespace-nowrap" title="Number of exact score predictions">Exacts <span class="text-[10px] text-gray-500 font-normal block">Count (Pts)</span></th>
+                                <th class="p-4 font-semibold text-center text-accent whitespace-nowrap">Total Points</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -463,7 +476,17 @@
                                     </td>
                                     
                                     <td class="p-4 text-center hidden md:table-cell tracking-widest text-sm whitespace-nowrap" x-text="user.form"></td>
-                                    <td class="p-4 text-center font-mono text-gray-400 hidden sm:table-cell" x-text="user.exact_scores"></td>
+                                    
+                                    <td class="p-4 text-center hidden sm:table-cell whitespace-nowrap">
+                                        <span class="font-bold text-gray-200" x-text="user.correct_results"></span>
+                                        <span class="text-xs font-mono text-gray-500 ml-1" x-text="'(' + user.result_points + ')'"></span>
+                                    </td>
+
+                                    <td class="p-4 text-center hidden sm:table-cell whitespace-nowrap">
+                                        <span class="font-bold text-gray-200" x-text="user.exact_scores"></span>
+                                        <span class="text-xs font-mono text-gray-500 ml-1" x-text="'(' + user.exact_points + ')'"></span>
+                                    </td>
+
                                     <td class="p-4 text-center font-bold text-accent" :class="index < 3 ? 'text-2xl' : 'text-xl'" x-text="user.points"></td>
                                 </tr>
                             </template>
@@ -517,8 +540,5 @@
         </div>
     </div>
     
-    <!-- Alpine.js Dependencies moved to END OF BODY to guarantee DOM parsing before execution -->
-    <script src="https://cdn.jsdelivr.net/npm/@alpinejs/collapse@3.x.x/dist/cdn.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 </body>
 </html>
